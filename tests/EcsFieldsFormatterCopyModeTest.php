@@ -28,6 +28,10 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         $this->formatter = new EcsFieldsFormatter(EcsFormatMode::Copy);
     }
 
+    /**
+     * @param array<string, mixed> $context
+     * @param array<string, mixed> $extra
+     */
     private function createRecord(
         string $message = 'Test message',
         array $context = [],
@@ -45,6 +49,9 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         );
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     private function formatAndDecode(LogRecord $record): array
     {
         return json_decode($this->formatter->format($record), true);

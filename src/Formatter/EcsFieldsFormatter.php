@@ -47,12 +47,13 @@ class EcsFieldsFormatter extends JsonFormatter
 
     public function format(LogRecord $record): string
     {
-        $normalized = parent::normalize($record->toArray());
+        $normalizedRaw = parent::normalize($record->toArray());
+        $normalized = is_array($normalizedRaw) ? $normalizedRaw : [];
 
         $output = $this->buildBaseFields($normalized);
 
-        $extra = $this->unflattenDotKeys($normalized['extra'] ?? []);
-        $context = $this->unflattenDotKeys($normalized['context'] ?? []);
+        $extra = $this->unflattenDotKeys(is_array($normalized['extra'] ?? null) ? $normalized['extra'] : []);
+        $context = $this->unflattenDotKeys(is_array($normalized['context'] ?? null) ? $normalized['context'] : []);
 
         if ($this->mode === EcsFormatMode::Copy) {
             // In copy mode, run namespace extraction against copies so originals are preserved.
@@ -161,6 +162,8 @@ class EcsFieldsFormatter extends JsonFormatter
      * Remainders are written back to $extra/$context by reference.
      *
      * @param array<string, mixed> $output
+     * @param array<string, mixed> $extra
+     * @param array<string, mixed> $context
      * @return array<string, mixed>
      */
     private function extractNamespaces(array $output, array &$extra, array &$context): array
@@ -206,6 +209,8 @@ class EcsFieldsFormatter extends JsonFormatter
      * Remainders are written back to $extra/$context by reference.
      *
      * @param array<string, mixed> $output
+     * @param array<string, mixed> $extra
+     * @param array<string, mixed> $context
      * @return array<string, mixed>
      */
     private function extractTags(array $output, array &$extra, array &$context): array
@@ -252,6 +257,7 @@ class EcsFieldsFormatter extends JsonFormatter
         return match ($namespace) {
             'labels', 'text' => $this->partitionScalars($namespace, $values),
             'metric' => $this->partitionMetrics($values),
+            default => [[], $values],
         };
     }
 
@@ -347,10 +353,6 @@ class EcsFieldsFormatter extends JsonFormatter
     private function unflattenDotKeys(array $data): array
     {
         foreach (array_keys($data) as $key) {
-            if (!is_string($key)) {
-                continue;
-            }
-
             $dotPos = strpos($key, '.');
 
             if ($dotPos === false) {

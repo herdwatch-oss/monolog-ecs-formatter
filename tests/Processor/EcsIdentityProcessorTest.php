@@ -11,6 +11,10 @@ use PHPUnit\Framework\TestCase;
 
 class EcsIdentityProcessorTest extends TestCase
 {
+    /**
+     * @param array<string, mixed> $context
+     * @param array<string, mixed> $extra
+     */
     private function createRecord(
         string $message = 'Test message',
         array $context = [],

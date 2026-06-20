@@ -14,6 +14,8 @@
         "symfony/http-kernel": "^7.0"
     },
     "require-dev": {
+        "php-cs-fixer/shim": "^3.0",
+        "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^11.0"
     },
     "autoload": {
@@ -30,7 +32,10 @@
         "sort-packages": true
     },
     "scripts": {
-        "test": "phpunit"
+        "test": "phpunit",
+        "phpstan": "phpstan analyse",
+        "cs-check": "php-cs-fixer fix --dry-run --diff",
+        "cs-fix": "php-cs-fixer fix"
     },
     "minimum-stability": "stable",
     "prefer-stable": true
