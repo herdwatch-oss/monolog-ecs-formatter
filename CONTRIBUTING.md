@@ -2,6 +2,10 @@
 
 Thanks for considering a contribution to `herdwatch-oss/monolog-ecs-formatter`.
 
+## Code of conduct
+
+This project adheres to the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating, you are expected to uphold it.
+
 ## Requirements
 
 - PHP 8.3+
