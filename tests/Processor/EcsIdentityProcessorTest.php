@@ -70,6 +70,17 @@ class EcsIdentityProcessorTest extends TestCase
         $processor($this->createRecord(context: []));
     }
 
+    public function testExistingServiceInExtraIsPreserved(): void
+    {
+        $existing = new Service('prior-svc', version: '2.0');
+        $result = (new EcsIdentityProcessor('config-svc'))(
+            $this->createRecord(extra: ['service' => $existing]),
+        );
+
+        self::assertSame($existing, $result->extra['service']);
+        self::assertSame('prior-svc', $result->extra['service']->toEcs()['service']['name']);
+    }
+
     public function testOriginalMessageUnmodified(): void
     {
         $result = (new EcsIdentityProcessor('my-service'))($this->createRecord('Original message'));

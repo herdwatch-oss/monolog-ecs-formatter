@@ -197,6 +197,18 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame('php', $output['service']['language']);
     }
 
+    public function testPlainContextNamespaceArrayIsMergedWithBagNotOverwritten(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'metric' => ['hand_written' => 9],
+            Metrics::create()->gauge('dur_ms', 1.5),
+        ]));
+
+        // Copy mode keeps both the legacy hand-written metric AND the promoted bag value.
+        self::assertSame(9, $output['context']['metric']['hand_written']);
+        self::assertSame(1.5, $output['context']['metric']['dur_ms']);
+    }
+
     public function testOutputIsSingleLineNdjson(): void
     {
         $raw = $this->formatter->format($this->createRecord(

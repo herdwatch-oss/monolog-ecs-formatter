@@ -22,13 +22,19 @@ final class EcsError implements EcsField
 
     public function toEcs(): array
     {
-        return [
-            'error' => [
-                'type' => $this->throwable::class,
-                'message' => $this->throwable->getMessage(),
-                'code' => (string) $this->throwable->getCode(),
-                'stack_trace' => $this->throwable->getTraceAsString(),
-            ],
+        $error = [
+            'type' => $this->throwable::class,
+            'message' => $this->throwable->getMessage(),
         ];
+
+        // Most exceptions carry no code (getCode() === 0); omit it rather than emit a noisy "0".
+        $code = $this->throwable->getCode();
+        if ($code !== 0 && $code !== '') {
+            $error['code'] = (string) $code;
+        }
+
+        $error['stack_trace'] = $this->throwable->getTraceAsString();
+
+        return ['error' => $error];
     }
 }

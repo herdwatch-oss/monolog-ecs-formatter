@@ -406,6 +406,70 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertSame('custom', $output['event']['action']);
     }
 
+    // --- Regression: list merge, never-drop, base protection, newline ---
+
+    public function testMultipleTagsBagsConcatenate(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Tags::of('a', 'b'),
+            Tags::of('c', 'd'),
+        ]));
+
+        self::assertSame(['a', 'b', 'c', 'd'], $output['tags']);
+    }
+
+    public function testTagsOverflowDoesNotCrashWhenContextHasScalarTags(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'tags' => 'web',
+            Tags::of('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'),
+        ]));
+
+        self::assertCount(8, $output['tags']);
+        // Never-drop: the plain scalar 'tags' and the overflow tag both survive under context.tags.
+        self::assertSame(['web', 'i'], $output['context']['tags']);
+    }
+
+    public function testNonArrayGovernedFragmentIsDemotedNotDropped(): void
+    {
+        $scalarMetric = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['metric' => 42];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$scalarMetric]));
+
+        self::assertArrayNotHasKey('metric', $output);
+        self::assertSame(42, $output['context']['metric']);
+    }
+
+    public function testNestedLogLevelFromFragmentIsStripped(): void
+    {
+        $logFragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['log' => ['level' => 'HACK', 'origin' => ['file' => ['name' => 'x.php']]]];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$logFragment]));
+
+        self::assertSame('info', $output['log.level']);
+        self::assertArrayNotHasKey('level', $output['log']);
+        self::assertSame('app', $output['log']['logger']);
+        self::assertSame('x.php', $output['log']['origin']['file']['name']);
+    }
+
+    public function testAppendNewlineFalseOmitsTrailingNewline(): void
+    {
+        $formatter = new EcsFieldsFormatter(appendNewline: false);
+
+        self::assertStringEndsNotWith("\n", $formatter->format($this->createRecord()));
+        self::assertStringEndsNotWith("\n", $formatter->formatBatch([$this->createRecord(), $this->createRecord()]));
+    }
+
     // --- Batch ---
 
     public function testFormatBatchProducesNdjson(): void

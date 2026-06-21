@@ -60,6 +60,15 @@ class IdentityTypesTest extends TestCase
         self::assertSame(['trace' => ['id' => 'trace-1']], (new Tracing('trace-1'))->toEcs());
     }
 
+    public function testEcsErrorOmitsZeroCode(): void
+    {
+        $error = (new EcsError(new \RuntimeException('no code')))->toEcs();
+
+        self::assertArrayNotHasKey('code', $error['error']);
+        self::assertSame('no code', $error['error']['message']);
+        self::assertSame('RuntimeException', $error['error']['type']);
+    }
+
     public function testEcsErrorCapturesTypeMessageCodeAndTrace(): void
     {
         $error = (new EcsError(new \RuntimeException('boom', 7)))->toEcs();

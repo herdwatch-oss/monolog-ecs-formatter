@@ -28,7 +28,8 @@ use Monolog\LogRecord;
  *     compatibility, and the legacy top-level keys (channel, level_name, level, datetime) are kept.
  *
  * A contributed fragment can never overwrite the base ECS skeleton (@timestamp, log.level, message,
- * ecs.version); contributions to `log`/`event` are merged additively with the base winning conflicts.
+ * ecs.version) — including a nested `log.level`, which is stripped from any `log` fragment.
+ * Contributions to `log`/`event` are otherwise merged additively with the base winning conflicts.
  *
  * Base fields emitted on every record: @timestamp, log.level, message, ecs.version, log.logger,
  * event.{kind,module,dataset,created,severity}.
@@ -47,6 +48,9 @@ class EcsFieldsFormatter extends JsonFormatter
 
     private const int MAX_TAGS = 8;
 
+    /** ISO-8601 with microseconds — the conventional precision for an ECS @timestamp. */
+    private const string DATE_FORMAT = 'Y-m-d\TH:i:s.uP';
+
     /** Base scalar fields a contributed fragment must never overwrite. */
     private const array PROTECTED_SCALARS = ['@timestamp', 'log.level', 'message', 'ecs.version'];
 
@@ -56,17 +60,31 @@ class EcsFieldsFormatter extends JsonFormatter
     public function __construct(
         private readonly EcsFormatMode $mode = EcsFormatMode::Move,
         private readonly string $ecsVersion = self::DEFAULT_ECS_VERSION,
-        int $batchMode = self::BATCH_MODE_NEWLINES,
         bool $appendNewline = true,
-        bool $ignoreEmptyContextAndExtra = false,
         bool $includeStacktraces = false,
     ) {
-        parent::__construct($batchMode, $appendNewline, $ignoreEmptyContextAndExtra, $includeStacktraces);
-        // ISO-8601 with microseconds — the conventional precision for an ECS @timestamp.
-        $this->setDateFormat('Y-m-d\TH:i:s.uP');
+        // NDJSON: one record per line, newline-delimited; empty context/extra objects are omitted.
+        parent::__construct(self::BATCH_MODE_NEWLINES, $appendNewline, true, $includeStacktraces);
+        $this->setDateFormat(self::DATE_FORMAT);
     }
 
     public function format(LogRecord $record): string
+    {
+        return $this->encodeRecord($record) . ($this->appendNewline ? "\n" : '');
+    }
+
+    public function formatBatch(array $records): string
+    {
+        $lines = array_map(fn (LogRecord $record): string => $this->encodeRecord($record), $records);
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return implode("\n", $lines) . ($this->appendNewline ? "\n" : '');
+    }
+
+    private function encodeRecord(LogRecord $record): string
     {
         // EcsField objects live in the raw context/extra. Pull them out BEFORE normalisation,
         // otherwise Monolog wraps each object as ['<FQCN>' => ...]. extra is scanned first and
@@ -95,18 +113,7 @@ class EcsFieldsFormatter extends JsonFormatter
             $output['extra'] = $leftoverExtra;
         }
 
-        return $this->toJson($output) . "\n";
-    }
-
-    public function formatBatch(array $records): string
-    {
-        $output = '';
-
-        foreach ($records as $record) {
-            $output .= $this->format($record);
-        }
-
-        return $output;
+        return $this->toJson($output);
     }
 
     /**
@@ -177,17 +184,32 @@ class EcsFieldsFormatter extends JsonFormatter
 
                 $this->placeLeftover('tags', $value, $rejected, $leftover);
             } elseif (isset(self::GOVERNED[$field])) {
-                $payload = is_array($value) ? $value : [];
-                [$promoted, $rejected] = $this->partitionNamespace($field, $payload);
+                if (!is_array($value)) {
+                    $this->demoteValue($field, $value, $leftover); // malformed payload — never drop
+                    continue;
+                }
+
+                [$promoted, $rejected] = $this->partitionNamespace($field, $value);
 
                 if ($promoted !== []) {
                     $output[$field] = $promoted;
                 }
 
-                $this->placeLeftover($field, $payload, $rejected, $leftover);
+                $this->placeLeftover($field, $value, $rejected, $leftover);
             } elseif (in_array($field, self::PROTECTED_SCALARS, true)) {
                 continue;
             } elseif (in_array($field, self::MERGE_UNDER_BASE, true)) {
+                if (!is_array($value)) {
+                    $this->demoteValue($field, $value, $leftover);
+                    continue;
+                }
+
+                if ($field === 'log') {
+                    // log.level is owned by the base skeleton (emitted as a dotted top-level key);
+                    // a nested level here would create a conflicting second log.level in Elasticsearch.
+                    unset($value['level']);
+                }
+
                 // Additive: keep base values on conflict, but allow new sub-keys (e.g. log.origin).
                 $output[$field] = $this->deepMerge($value, $output[$field] ?? []);
             } else {
@@ -196,6 +218,16 @@ class EcsFieldsFormatter extends JsonFormatter
         }
 
         return $output;
+    }
+
+    /**
+     * Never-drop a malformed (non-array) value contributed under a known object field.
+     *
+     * @param array<string, mixed> $leftover modified by reference
+     */
+    private function demoteValue(string $field, mixed $value, array &$leftover): void
+    {
+        $leftover[$field] ??= $value;
     }
 
     /**
@@ -249,8 +281,9 @@ class EcsFieldsFormatter extends JsonFormatter
 
     /**
      * Never-drop policy for what couldn't be promoted.
-     *   - Copy: mirror the full original payload under context.<namespace> for dashboard compatibility.
-     *   - Move: keep only the rejected entries, as dotted keys, in the leftover context.
+     *   - Copy: mirror the full original payload under context.<namespace>, merged with any
+     *     pre-existing plain-context value of the same name (never overwriting it).
+     *   - Move: keep only the rejected entries — governed namespaces as dotted keys, tags as a list.
      *
      * @param mixed                $full     the complete fragment payload for this namespace
      * @param array<array-key, mixed> $rejected entries that were not promoted
@@ -260,16 +293,22 @@ class EcsFieldsFormatter extends JsonFormatter
     {
         if ($this->mode === EcsFormatMode::Copy) {
             if (is_array($full) && $full !== []) {
-                $leftover[$namespace] = $full;
+                $leftover[$namespace] = $this->deepMerge($leftover[$namespace] ?? [], $full);
             }
 
             return;
         }
 
+        if ($rejected === []) {
+            return;
+        }
+
         if ($namespace === 'tags') {
-            foreach ($rejected as $tag) {
-                $leftover['tags'][] = $tag;
-            }
+            // tags is a flat list; merge rejected entries into any existing value without assuming
+            // the leftover slot is already an array (a plain scalar context 'tags' may occupy it).
+            $existing = $leftover['tags'] ?? [];
+            $existing = is_array($existing) ? array_values($existing) : [$existing];
+            $leftover['tags'] = array_merge($existing, $rejected);
 
             return;
         }
@@ -313,9 +352,7 @@ class EcsFieldsFormatter extends JsonFormatter
 
     private function formatDatetime(LogRecord $record): string
     {
-        $normalized = $this->normalize($record->datetime);
-
-        return is_string($normalized) ? $normalized : $record->datetime->format('Y-m-d\TH:i:s.uP');
+        return $record->datetime->format(self::DATE_FORMAT);
     }
 
     /**
@@ -336,6 +373,11 @@ class EcsFieldsFormatter extends JsonFormatter
     private function deepMerge(mixed $a, mixed $b): mixed
     {
         if (is_array($a) && is_array($b)) {
+            // Two lists concatenate (e.g. tags from multiple bags); maps merge key-by-key, $b winning.
+            if (array_is_list($a) && array_is_list($b)) {
+                return array_merge($a, $b);
+            }
+
             foreach ($b as $key => $value) {
                 $a[$key] = array_key_exists($key, $a) ? $this->deepMerge($a[$key], $value) : $value;
             }

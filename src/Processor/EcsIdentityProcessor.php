@@ -28,7 +28,8 @@ final class EcsIdentityProcessor implements ProcessorInterface
     {
         $extra = $record->extra;
 
-        $extra['service'] = new Service($this->serviceName, language: $this->language);
+        // Respect a Service already set by application code or an earlier processor.
+        $extra['service'] ??= new Service($this->serviceName, language: $this->language);
 
         return $record->with(extra: $extra);
     }

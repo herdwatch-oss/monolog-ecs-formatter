@@ -52,7 +52,7 @@ class MonologEcsFormatterBundle extends AbstractBundle
             $container->services()
                 ->set(EcsIdentityProcessor::class)
                 ->arg('$serviceName', $config['service_name'])
-                ->autoconfigure();
+                ->tag('monolog.processor');
         }
 
         $env = $container->env();
