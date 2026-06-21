@@ -470,8 +470,10 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertSame('x.php', $output['log']['origin']['file']['name']);
     }
 
-    public function testFragmentNamedContextIsMergedNotClobberedByPlainContext(): void
+    public function testFragmentNamedContextIsNestedUnderContextNotClobberingBucket(): void
     {
+        // `context` is a reserved output bucket, not an ECS field. A fragment using it is demoted
+        // (nested under context.context), preserving its data without corrupting the bucket.
         $fragment = new class () implements EcsField {
             public function toEcs(): array
             {
@@ -481,13 +483,14 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($this->createRecord(context: [$fragment, 'plain' => 'value']));
 
-        // Both the fragment's contribution and the plain leftover survive — never-drop.
-        self::assertSame('frag', $output['context']['injected']);
+        self::assertSame(['injected' => 'frag'], $output['context']['context']);
         self::assertSame('value', $output['context']['plain']);
     }
 
-    public function testFragmentNamedExtraIsMergedNotClobberedByLeftoverExtra(): void
+    public function testFragmentNamedExtraIsNestedUnderContextLeavingRealExtraIntact(): void
     {
+        // `extra` is likewise reserved (Monolog's verbatim bucket); a fragment targeting it is
+        // demoted under context.extra and the real extra bucket is untouched.
         $fragment = new class () implements EcsField {
             public function toEcs(): array
             {
@@ -500,26 +503,43 @@ class EcsFieldsFormatterTest extends TestCase
             extra: ['real_extra' => 1],
         ));
 
-        self::assertSame('frag', $output['extra']['injected']);
-        self::assertSame(1, $output['extra']['real_extra']);
+        self::assertSame(['injected' => 'frag'], $output['context']['extra']);
+        self::assertSame(['real_extra' => 1], $output['extra']);
     }
 
-    public function testFragmentNamedContextYieldsToCollidingPlainContextKey(): void
+    public function testNestedEcsVersionFromFragmentIsStripped(): void
     {
+        // Symmetric to the log.level case: the base owns the dotted ecs.version, so a nested
+        // ecs.version contribution is stripped to avoid a duplicate field; siblings pass through.
         $fragment = new class () implements EcsField {
             public function toEcs(): array
             {
-                return ['context' => ['shared' => 'from-fragment', 'only_frag' => 'kept']];
+                return ['ecs' => ['version' => '9.9.9', 'custom' => 'kept']];
             }
         };
 
-        $output = $this->formatAndDecode($this->createRecord(
-            context: [$fragment, 'shared' => 'from-context'],
-        ));
+        $output = $this->formatAndDecode($this->createRecord(context: [$fragment]));
 
-        // Distinct keys from both sides survive; on an exact clash the logged context wins.
-        self::assertSame('from-context', $output['context']['shared']);
-        self::assertSame('kept', $output['context']['only_frag']);
+        self::assertSame('8.11.0', $output['ecs.version']);
+        self::assertSame(['custom' => 'kept'], $output['ecs']);
+    }
+
+    public function testNestedEcsVersionOnlyFragmentEmitsNoEcsObject(): void
+    {
+        // A fragment whose only contribution was the stripped ecs.version adds nothing — no empty
+        // `ecs` object, no demotion.
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['ecs' => ['version' => '9.9.9']];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$fragment]));
+
+        self::assertSame('8.11.0', $output['ecs.version']);
+        self::assertArrayNotHasKey('ecs', $output);
+        self::assertArrayNotHasKey('context', $output);
     }
 
     public function testProtectedScalarFragmentYieldsToCollidingPlainContextKey(): void

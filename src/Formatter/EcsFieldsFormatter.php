@@ -30,8 +30,11 @@ use Monolog\LogRecord;
  *     compatibility, and the legacy top-level keys (channel, level_name, level, datetime) are kept.
  *
  * A contributed fragment can never overwrite the base ECS skeleton (@timestamp, log.level, message,
- * ecs.version) — including a nested `log.level`, which is stripped from any `log` fragment.
- * Contributions to `log`/`event` are otherwise merged additively with the base winning conflicts.
+ * ecs.version), whether expressed as a top-level dotted key or nested — a nested `log.level` or
+ * `ecs.version` is stripped from a `log`/`ecs` fragment to avoid a duplicate field. Contributions to
+ * `log`/`event` are otherwise merged additively with the base winning conflicts. The reserved output
+ * buckets `context`/`extra` are not ECS fields: a fragment that targets them is demoted under
+ * `context` rather than driving the bucket.
  *
  * Base fields emitted on every record: @timestamp, log.level, message, ecs.version, log.logger,
  * event.{kind,module,dataset,created,severity}.
@@ -53,11 +56,21 @@ class EcsFieldsFormatter extends JsonFormatter
     /** ISO-8601 with microseconds — the conventional precision for an ECS @timestamp. */
     private const string DATE_FORMAT = 'Y-m-d\TH:i:s.uP';
 
-    /** Base scalar fields a contributed fragment must never overwrite. */
+    /** Base scalar fields a contributed fragment must never overwrite (matched as a literal field key). */
     private const array PROTECTED_SCALARS = ['@timestamp', 'log.level', 'message', 'ecs.version'];
+
+    /**
+     * Base scalars the skeleton emits in DOTTED top-level form, as parent => owned child. A fragment
+     * expressing the same path NESTED (e.g. ['ecs' => ['version' => …]], ['log' => ['level' => …]])
+     * would create a duplicate field in Elasticsearch, so the owned child is stripped from it.
+     */
+    private const array PROTECTED_NESTED = ['log' => 'level', 'ecs' => 'version'];
 
     /** Base object fields a fragment may extend additively, but never override (base wins conflicts). */
     private const array MERGE_UNDER_BASE = ['log', 'event'];
+
+    /** The formatter's own output buckets — not ECS fields, so a fragment may not drive them. */
+    private const array RESERVED_BUCKETS = ['context', 'extra'];
 
     public function __construct(
         private readonly EcsFormatMode $mode = EcsFormatMode::Move,
@@ -106,22 +119,15 @@ class EcsFieldsFormatter extends JsonFormatter
         $leftoverContext = $this->normalizeArray($context);
         $output = $this->mergeFragments($output, $fragments, $leftoverContext);
 
+        // `context`/`extra` are reserved buckets: mergeFragments demotes any fragment that targets
+        // them, so nothing else writes these slots and a direct assignment is safe.
         if ($leftoverContext !== []) {
-            // Normally nothing has written `context` yet — assign directly. The slot is only
-            // pre-populated by the rare fragment whose ECS field is literally `context`; merge its
-            // map with the leftover, the logged context winning on key clashes (first-write
-            // precedence, as for demotions). A non-map such a fragment may contribute is a misuse
-            // of a reserved name and is not preserved.
-            $output['context'] = isset($output['context'])
-                ? $this->deepMerge($output['context'], $leftoverContext)
-                : $leftoverContext;
+            $output['context'] = $leftoverContext;
         }
 
         $leftoverExtra = $this->normalizeArray($extra);
         if ($leftoverExtra !== []) {
-            $output['extra'] = isset($output['extra'])
-                ? $this->deepMerge($output['extra'], $leftoverExtra)
-                : $leftoverExtra;
+            $output['extra'] = $leftoverExtra;
         }
 
         return $this->toJson($output);
@@ -192,6 +198,12 @@ class EcsFieldsFormatter extends JsonFormatter
     private function mergeFragments(array $output, array $fragments, array &$leftover): array
     {
         foreach ($fragments as $field => $value) {
+            // Strip any nested contribution to a dotted base path (e.g. log.level, ecs.version)
+            // before placing the fragment, so it can never shadow the base skeleton.
+            if (isset(self::PROTECTED_NESTED[$field]) && is_array($value)) {
+                unset($value[self::PROTECTED_NESTED[$field]]);
+            }
+
             if ($field === 'tags') {
                 [$promoted, $rejected] = $this->partitionTags($value);
 
@@ -213,10 +225,10 @@ class EcsFieldsFormatter extends JsonFormatter
                 }
 
                 $this->placeLeftover($field, $value, $rejected, $leftover);
-            } elseif (in_array($field, self::PROTECTED_SCALARS, true)) {
-                // The base skeleton owns these; a fragment may not overwrite them. Demote under
-                // context instead of dropping — though an existing plain-context key of the same
-                // name wins (first-write precedence, as for governed demotions).
+            } elseif (in_array($field, self::RESERVED_BUCKETS, true) || in_array($field, self::PROTECTED_SCALARS, true)) {
+                // Reserved buckets (context, extra) are not ECS fields, and the base owns the
+                // protected scalars — neither may become a top-level field. Demote so the value is
+                // preserved under context; an existing logged key of that name wins (first-write).
                 $this->demoteValue($field, $value, $leftover);
             } elseif (in_array($field, self::MERGE_UNDER_BASE, true)) {
                 if (!is_array($value)) {
@@ -224,15 +236,11 @@ class EcsFieldsFormatter extends JsonFormatter
                     continue;
                 }
 
-                if ($field === 'log') {
-                    // log.level is owned by the base skeleton (emitted as a dotted top-level key);
-                    // a nested level here would create a conflicting second log.level in Elasticsearch.
-                    unset($value['level']);
-                }
-
                 // Additive: keep base values on conflict, but allow new sub-keys (e.g. log.origin).
                 $output[$field] = $this->deepMerge($value, $output[$field] ?? []);
-            } else {
+            } elseif (!is_array($value) || $value !== []) {
+                // Passthrough ECS namespace (service, user, trace, http, project-specific, …).
+                // An empty array — e.g. a fragment that was only a stripped base path — adds nothing.
                 $output[$field] = $this->deepMerge($output[$field] ?? [], $value);
             }
         }
