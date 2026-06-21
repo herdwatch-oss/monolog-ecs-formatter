@@ -35,8 +35,8 @@ use Monolog\LogRecord;
  */
 class EcsFieldsFormatter extends JsonFormatter
 {
-    /** ECS schema version advertised in the `ecs.version` field. */
-    private const string ECS_VERSION = '8.11.0';
+    /** Default ECS schema version advertised in the `ecs.version` field; override per-instance or via bundle config. */
+    public const string DEFAULT_ECS_VERSION = '8.11.0';
 
     /** Governed namespaces and their maximum promoted key counts. */
     private const array GOVERNED = [
@@ -55,6 +55,7 @@ class EcsFieldsFormatter extends JsonFormatter
 
     public function __construct(
         private readonly EcsFormatMode $mode = EcsFormatMode::Move,
+        private readonly string $ecsVersion = self::DEFAULT_ECS_VERSION,
         int $batchMode = self::BATCH_MODE_NEWLINES,
         bool $appendNewline = true,
         bool $ignoreEmptyContextAndExtra = false,
@@ -289,7 +290,7 @@ class EcsFieldsFormatter extends JsonFormatter
             '@timestamp' => $datetime,
             'log.level' => strtolower($levelName),
             'message' => $record->message,
-            'ecs.version' => self::ECS_VERSION,
+            'ecs.version' => $this->ecsVersion,
             'log' => ['logger' => $record->channel],
             'event' => [
                 'kind' => 'event',

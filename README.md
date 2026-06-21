@@ -48,6 +48,7 @@ Create `config/packages/monolog_ecs_formatter.yaml`:
 monolog_ecs_formatter:
     mode: move                  # "move" (default) or "copy" — see Modes below
     service_name: my-service    # optional; enables the EcsIdentityProcessor when set
+    ecs_version: '8.11.0'       # optional; value advertised in ecs.version (defaults to the ECS schema this formatter targets)
 ```
 
 ## Passing fields
@@ -138,7 +139,7 @@ To apply a custom field to **every** record, inject it from a Monolog processor 
 | `@timestamp` | record datetime, ISO-8601 with microseconds |
 | `log.level` | lowercased level name (dotted top-level key, per the ecs-logging spec) |
 | `message` | log message |
-| `ecs.version` | `8.11.0` |
+| `ecs.version` | configurable; defaults to `8.11.0` (the ECS schema this formatter's fields conform to — bump it if you emit fields from a newer ECS version) |
 | `log.logger` | channel name |
 | `event.kind` / `module` / `dataset` | `event` / `symfony` / `symfony.logs` |
 | `event.created` / `severity` | record datetime / Monolog level integer |

@@ -74,6 +74,23 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayHasKey('created', $output['event']);
     }
 
+    public function testEcsVersionDefaultsToConstant(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord());
+
+        self::assertSame(EcsFieldsFormatter::DEFAULT_ECS_VERSION, $output['ecs.version']);
+    }
+
+    public function testEcsVersionIsConfigurable(): void
+    {
+        $output = json_decode(
+            (new EcsFieldsFormatter(ecsVersion: '9.0.0'))->format($this->createRecord()),
+            true,
+        );
+
+        self::assertSame('9.0.0', $output['ecs.version']);
+    }
+
     public function testTimestampUsesIso8601WithMicroseconds(): void
     {
         $output = $this->formatAndDecode($this->createRecord());
