@@ -324,8 +324,12 @@ class EcsFieldsFormatterTest extends TestCase
             'exception' => new \RuntimeException('raw'),
         ]));
 
+        // The explicit EcsError owns error.*.
         self::assertSame('explicit', $output['error']['message']);
-        self::assertArrayNotHasKey('context', $output);
+        // The raw context exception can't claim error.*, but it must not be silently dropped:
+        // it is preserved (Monolog-normalised) under context.
+        self::assertSame('RuntimeException', $output['context']['exception']['class']);
+        self::assertSame('raw', $output['context']['exception']['message']);
     }
 
     // --- extra ---
@@ -464,6 +468,113 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayNotHasKey('level', $output['log']);
         self::assertSame('app', $output['log']['logger']);
         self::assertSame('x.php', $output['log']['origin']['file']['name']);
+    }
+
+    public function testFragmentNamedContextIsMergedNotClobberedByPlainContext(): void
+    {
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['context' => ['injected' => 'frag']];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$fragment, 'plain' => 'value']));
+
+        // Both the fragment's contribution and the plain leftover survive — never-drop.
+        self::assertSame('frag', $output['context']['injected']);
+        self::assertSame('value', $output['context']['plain']);
+    }
+
+    public function testFragmentNamedExtraIsMergedNotClobberedByLeftoverExtra(): void
+    {
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['extra' => ['injected' => 'frag']];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [$fragment],
+            extra: ['real_extra' => 1],
+        ));
+
+        self::assertSame('frag', $output['extra']['injected']);
+        self::assertSame(1, $output['extra']['real_extra']);
+    }
+
+    public function testFragmentNamedContextYieldsToCollidingPlainContextKey(): void
+    {
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['context' => ['shared' => 'from-fragment', 'only_frag' => 'kept']];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [$fragment, 'shared' => 'from-context'],
+        ));
+
+        // Distinct keys from both sides survive; on an exact clash the logged context wins.
+        self::assertSame('from-context', $output['context']['shared']);
+        self::assertSame('kept', $output['context']['only_frag']);
+    }
+
+    public function testProtectedScalarFragmentYieldsToCollidingPlainContextKey(): void
+    {
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['message' => 'from-fragment'];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [$fragment, 'message' => 'from-context'],
+        ));
+
+        // A plain context key of the same name wins; the base top-level message is still protected.
+        self::assertSame('Test message', $output['message']);
+        self::assertSame('from-context', $output['context']['message']);
+    }
+
+    public function testDemotionRespectsAnExistingNullPlainContextKey(): void
+    {
+        // A plain context key set to null still counts as "logged" — first-write precedence keeps
+        // it rather than letting the demoted fragment value replace it (array_key_exists, not ??=).
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['message' => 'from-fragment'];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [$fragment, 'message' => null],
+        ));
+
+        self::assertNull($output['context']['message']);
+    }
+
+    public function testProtectedScalarFragmentIsDemotedNotDropped(): void
+    {
+        $fragment = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['message' => 'OVERRIDE', 'ecs.version' => '0'];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(message: 'real', context: [$fragment]));
+
+        // Base scalars are not overwritten...
+        self::assertSame('real', $output['message']);
+        self::assertSame('8.11.0', $output['ecs.version']);
+        // ...but the contributed values are demoted to context rather than silently dropped.
+        self::assertSame('OVERRIDE', $output['context']['message']);
+        self::assertSame('0', $output['context']['ecs.version']);
     }
 
     public function testAppendNewlineFalseOmitsTrailingNewline(): void

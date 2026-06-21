@@ -29,6 +29,13 @@ class MonologEcsFormatterBundle extends AbstractBundle
                 ->end()
                 ->scalarNode('ecs_version')
                     ->defaultNull()
+                    // Reject anything that would emit a blank/garbage ecs.version: empty string,
+                    // and non-string scalars (false coerces to "", ints/floats lose intent).
+                    // Null (the default) is allowed and falls back to DEFAULT_ECS_VERSION.
+                    ->validate()
+                        ->ifTrue(static fn (mixed $v): bool => $v !== null && (!is_string($v) || $v === ''))
+                        ->thenInvalid('monolog_ecs_formatter.ecs_version must be a non-empty string (e.g. "8.11.0"), got %s.')
+                    ->end()
                     ->info('Value advertised in the ecs.version field. Defaults to the ECS schema version this formatter targets; set it to match the ECS schema your custom EcsField types / Elasticsearch index template use.')
                 ->end()
             ->end()
@@ -44,6 +51,8 @@ class MonologEcsFormatterBundle extends AbstractBundle
             ->set(EcsFieldsFormatter::class)
             ->arg('$mode', EcsFormatMode::from($config['mode']));
 
+        // Validation above guarantees a non-empty string here when set; null is the default and
+        // falls back to the formatter's DEFAULT_ECS_VERSION.
         if ($config['ecs_version'] !== null) {
             $formatter->arg('$ecsVersion', $config['ecs_version']);
         }

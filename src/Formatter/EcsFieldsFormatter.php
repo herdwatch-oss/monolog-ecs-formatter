@@ -19,7 +19,9 @@ use Monolog\LogRecord;
  * `instanceof` in the raw context/extra — the array key is irrelevant, so they may be passed
  * positionally or under any key. Ordinary (non-EcsField) context flows, un-promoted, into a
  * leftover `context` object; `extra` is emitted verbatim. A `\Throwable` at `context['exception']`
- * (the Monolog convention) is promoted to `error.*` — kept in `context` in copy mode, removed in move mode.
+ * (the Monolog convention) is promoted to `error.*` and removed from `context` in move mode (kept in
+ * copy mode) — unless an explicit `EcsError` already owns `error.*`, in which case the throwable is
+ * left in `context` (never dropped, never double-promoted) in both modes.
  *
  * Governed namespaces (labels, metric, text, tags) get key-name validation and a per-namespace cap
  * regardless of which EcsField produced them. Anything that can't be promoted is never dropped:
@@ -105,12 +107,21 @@ class EcsFieldsFormatter extends JsonFormatter
         $output = $this->mergeFragments($output, $fragments, $leftoverContext);
 
         if ($leftoverContext !== []) {
-            $output['context'] = $leftoverContext;
+            // Normally nothing has written `context` yet — assign directly. The slot is only
+            // pre-populated by the rare fragment whose ECS field is literally `context`; merge its
+            // map with the leftover, the logged context winning on key clashes (first-write
+            // precedence, as for demotions). A non-map such a fragment may contribute is a misuse
+            // of a reserved name and is not preserved.
+            $output['context'] = isset($output['context'])
+                ? $this->deepMerge($output['context'], $leftoverContext)
+                : $leftoverContext;
         }
 
         $leftoverExtra = $this->normalizeArray($extra);
         if ($leftoverExtra !== []) {
-            $output['extra'] = $leftoverExtra;
+            $output['extra'] = isset($output['extra'])
+                ? $this->deepMerge($output['extra'], $leftoverExtra)
+                : $leftoverExtra;
         }
 
         return $this->toJson($output);
@@ -140,9 +151,10 @@ class EcsFieldsFormatter extends JsonFormatter
 
     /**
      * Promote a \Throwable at context['exception'] (the Monolog convention) to error.* via EcsError.
-     * An explicit EcsError contributed by a bag takes precedence. In move mode the consumed exception
-     * is removed from the leftover context; in copy mode it is kept (Monolog-normalised) for
-     * dashboard compatibility.
+     * When an explicit EcsError (from a bag) already owns error.*, the throwable is left untouched in
+     * context — never dropped, never double-promoted — in both modes. Otherwise it is promoted, and
+     * in move mode the consumed exception is removed from the leftover context; in copy mode it is
+     * kept (Monolog-normalised) for dashboard compatibility.
      *
      * @param array<array-key, mixed> $context   modified by reference
      * @param array<string, mixed>    $fragments modified by reference
@@ -155,10 +167,15 @@ class EcsFieldsFormatter extends JsonFormatter
             return;
         }
 
-        if (!isset($fragments['error'])) {
-            foreach ((new EcsError($exception))->toEcs() as $field => $payload) {
-                $fragments[$field] = $payload;
-            }
+        // An explicit EcsError (from a bag) already owns error.*. Leave this exception in context
+        // rather than consuming it — unsetting it here without promoting it would silently drop it,
+        // breaking the never-drop policy. It flows, Monolog-normalised, into the leftover context.
+        if (isset($fragments['error'])) {
+            return;
+        }
+
+        foreach ((new EcsError($exception))->toEcs() as $field => $payload) {
+            $fragments[$field] = $payload;
         }
 
         if ($this->mode === EcsFormatMode::Move) {
@@ -197,7 +214,10 @@ class EcsFieldsFormatter extends JsonFormatter
 
                 $this->placeLeftover($field, $value, $rejected, $leftover);
             } elseif (in_array($field, self::PROTECTED_SCALARS, true)) {
-                continue;
+                // The base skeleton owns these; a fragment may not overwrite them. Demote under
+                // context instead of dropping — though an existing plain-context key of the same
+                // name wins (first-write precedence, as for governed demotions).
+                $this->demoteValue($field, $value, $leftover);
             } elseif (in_array($field, self::MERGE_UNDER_BASE, true)) {
                 if (!is_array($value)) {
                     $this->demoteValue($field, $value, $leftover);
@@ -221,13 +241,17 @@ class EcsFieldsFormatter extends JsonFormatter
     }
 
     /**
-     * Never-drop a malformed (non-array) value contributed under a known object field.
+     * Never-drop a value that can't be promoted, by parking it under $field in the leftover context.
+     * An existing key wins (first-write precedence) — including one whose value is null, so an
+     * explicit plain-context entry is never silently replaced.
      *
      * @param array<string, mixed> $leftover modified by reference
      */
     private function demoteValue(string $field, mixed $value, array &$leftover): void
     {
-        $leftover[$field] ??= $value;
+        if (!array_key_exists($field, $leftover)) {
+            $leftover[$field] = $value;
+        }
     }
 
     /**
