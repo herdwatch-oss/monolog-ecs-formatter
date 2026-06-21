@@ -17,6 +17,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
 use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
+use Herdwatch\MonologEcsFormatter\Ecs\Url;
 use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Herdwatch\MonologEcsFormatter\Ecs\UserAgent;
 use Psr\Log\LoggerInterface;
@@ -82,6 +83,7 @@ class TestLogFormatterCommand extends Command
             new Client(ip: '203.0.113.' . random_int(1, 254)),
             new UserAgent(device: 'iPhone', version: '4.2.1'),
             new Host(name: gethostname() ?: 'localhost'),
+            Url::parse('https://app.herdwatch.com/herds/' . random_int(100, 999) . '?view=summary'),
             new Event(action: 'api.request', start: new \DateTimeImmutable()),
         ]);
 

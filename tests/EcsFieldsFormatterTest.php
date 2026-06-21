@@ -16,6 +16,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
 use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
+use Herdwatch\MonologEcsFormatter\Ecs\Url;
 use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter;
 use Monolog\Level;
@@ -613,12 +614,16 @@ class EcsFieldsFormatterTest extends TestCase
             new Http(statusCode: 503, method: 'get'),
             new Process(pid: 99, commandLine: 'bin/console app:run'),
             new Client(ip: '203.0.113.7'),
+            Url::parse('https://app.herdwatch.com/herds/42?view=summary'),
         ]));
 
         self::assertSame(503, $output['http']['response']['status_code']);
         self::assertSame('GET', $output['http']['request']['method']);
         self::assertSame(99, $output['process']['pid']);
         self::assertSame('203.0.113.7', $output['client']['ip']);
+        self::assertSame('app.herdwatch.com', $output['url']['domain']);
+        self::assertSame('/herds/42', $output['url']['path']);
+        self::assertSame('view=summary', $output['url']['query']);
         self::assertArrayNotHasKey('context', $output);
     }
 

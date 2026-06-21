@@ -137,11 +137,13 @@ Bundled value objects for common runtime / request / host fields, so each servic
 | `UserAgent` | `user_agent.original`, `user_agent.version`, `user_agent.device.name` |
 | `Host` | `host.name`, `host.ip` |
 | `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
+| `Url` | `url.full`, `url.scheme`, `url.domain`, `url.port`, `url.path`, `url.query`, `url.fragment` — pass parts by name, or use `Url::parse($url)` to split a URL string |
 
 ```php
 $log->info('Inbound request', [
     new Http(statusCode: 200, method: 'POST'),
     new Client(ip: $request->getClientIp()),
+    Url::parse((string) $request->getUri()),
     new Event(action: 'api.request', start: $startedAt),
 ]);
 ```
