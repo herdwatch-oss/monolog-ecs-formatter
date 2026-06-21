@@ -4,37 +4,52 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Formatter;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Key;
 use Monolog\Formatter\JsonFormatter;
 use Monolog\LogRecord;
 
 /**
- * Monolog formatter that extracts known keys (labels, metric, text, tags)
- * from context and promotes them to top-level JSON fields for proper Elasticsearch mapping.
+ * Monolog formatter that promotes typed {@see EcsField} value objects from a log's context/extra
+ * to top-level ECS-aligned JSON fields, for clean Elasticsearch mapping.
  *
- * Metric values are type-coerced: *_count/*_total → int, is_* → bool, everything else → float.
- * Tags are promoted as a flat array of unique keyword strings (ECS base field).
+ * Promotion is driven entirely by the typed bags/identity objects (Metrics, Labels, Text, Tags,
+ * Service, User, Tracing, EcsError and any project-specific EcsField). The objects are detected by
+ * `instanceof` in the raw context/extra — the array key is irrelevant, so they may be passed
+ * positionally or under any key. Ordinary (non-EcsField) context flows, un-promoted, into a
+ * leftover `context` object; `extra` is emitted verbatim.
  *
- * extra is treated as opaque processor data: its contents are NOT scanned for extractable namespaces
- * and are re-emitted verbatim (after service/error identity fields have been lifted out).
+ * Governed namespaces (labels, metric, text, tags) get key-name validation and a per-namespace cap
+ * regardless of which EcsField produced them. Anything that can't be promoted is never dropped:
+ *   - Move (default): demoted into the leftover `context` with a dotted key (e.g. `metric.bad key`).
+ *   - Copy: the full original payload is mirrored under `context.<namespace>` for dashboard
+ *     compatibility, and the legacy top-level keys (channel, level_name, level, datetime) are kept.
  *
- * Modes:
- *   Move (default): relocate fields to ECS top-level and drop originals — clean ECS-only end-state.
- *   Copy: promote ECS fields AND retain all original top-level keys (channel, level_name, level, datetime)
- *         and original context/extra contents — non-destructive transition mode.
+ * A contributed fragment can never overwrite the base ECS skeleton (@timestamp, log.level, message,
+ * ecs.version); contributions to `log`/`event` are merged additively with the base winning conflicts.
+ *
+ * Base fields emitted on every record: @timestamp, log.level, message, ecs.version, log.logger,
+ * event.{kind,module,dataset,created,severity}.
  */
 class EcsFieldsFormatter extends JsonFormatter
 {
-    private const array EXTRACTABLE_KEYS = ['labels', 'metric', 'text'];
-    private const array LONG_SUFFIXES = ['_count', '_total'];
-    private const array BOOL_PREFIXES = ['is_'];
+    /** ECS schema version advertised in the `ecs.version` field. */
+    private const string ECS_VERSION = '8.11.0';
 
-    private const string KEY_PATTERN = '/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/';
-    private const int MAX_TAGS = 8; // flat keyword array — generous for categorisation
-    private const array MAX_KEYS = [
-        'labels' => 8,   // filtering dimensions
-        'metric' => 8,  // capped at 8 keys
-        'text' => 2,     // long text fields — one or two per event is enough
+    /** Governed namespaces and their maximum promoted key counts. */
+    private const array GOVERNED = [
+        'labels' => 8,
+        'metric' => 8,
+        'text' => 2,
     ];
+
+    private const int MAX_TAGS = 8;
+
+    /** Base scalar fields a contributed fragment must never overwrite. */
+    private const array PROTECTED_SCALARS = ['@timestamp', 'log.level', 'message', 'ecs.version'];
+
+    /** Base object fields a fragment may extend additively, but never override (base wins conflicts). */
+    private const array MERGE_UNDER_BASE = ['log', 'event'];
 
     public function __construct(
         private readonly EcsFormatMode $mode = EcsFormatMode::Move,
@@ -44,168 +59,39 @@ class EcsFieldsFormatter extends JsonFormatter
         bool $includeStacktraces = false,
     ) {
         parent::__construct($batchMode, $appendNewline, $ignoreEmptyContextAndExtra, $includeStacktraces);
+        // ISO-8601 with microseconds — the conventional precision for an ECS @timestamp.
+        $this->setDateFormat('Y-m-d\TH:i:s.uP');
     }
 
     public function format(LogRecord $record): string
     {
-        $normalizedRaw = parent::normalize($record->toArray());
-        $normalized = is_array($normalizedRaw) ? $normalizedRaw : [];
+        // EcsField objects live in the raw context/extra. Pull them out BEFORE normalisation,
+        // otherwise Monolog wraps each object as ['<FQCN>' => ...]. extra is scanned first and
+        // context second, so an explicit context object wins over a processor-supplied one.
+        $context = $record->context;
+        $extra = $record->extra;
 
-        $output = $this->buildBaseFields($normalized);
+        $fragments = [];
+        $this->pullFields($extra, $fragments);
+        $this->pullFields($context, $fragments);
 
-        // extra is opaque processor data — never unflattened or scanned for extractable namespaces.
-        $extra = is_array($normalized['extra'] ?? null) ? $normalized['extra'] : [];
-        $context = $this->unflattenDotKeys(is_array($normalized['context'] ?? null) ? $normalized['context'] : []);
+        $datetime = $this->formatDatetime($record);
+        $output = $this->buildBaseFields($record, $datetime);
 
-        // Extract namespaces from a working copy of context. In move mode the namespace keys are
-        // consumed, so the remainder is re-emitted; in copy mode the original context is preserved
-        // intact (promoted values appear both top-level and under their original context location).
-        $working = $context;
-        $output = $this->extractNamespaces($output, $working);
-        $output = $this->extractTags($output, $working);
+        // Leftover (non-EcsField) context is emitted as-is; bag overflow/demotions are added to it.
+        $leftoverContext = $this->normalizeArray($context);
+        $output = $this->mergeFragments($output, $fragments, $leftoverContext);
 
-        $leftoverContext = $this->mode === EcsFormatMode::Copy ? $context : $working;
-
-        // Promote bounded ECS objects (service, error) from context/extra in both modes, stripping
-        // them from the leftovers since they now appear at top-level.
-        $output = $this->promoteEcsObjects($output, $leftoverContext, $extra);
-
-        // Re-emit whatever is left so nothing is lost.
-        if ($leftoverContext) {
+        if ($leftoverContext !== []) {
             $output['context'] = $leftoverContext;
         }
 
-        if ($extra) {
-            $output['extra'] = $extra;
+        $leftoverExtra = $this->normalizeArray($extra);
+        if ($leftoverExtra !== []) {
+            $output['extra'] = $leftoverExtra;
         }
 
         return $this->toJson($output) . "\n";
-    }
-
-    /**
-     * @param array<string, mixed> $normalized
-     * @return array<string, mixed>
-     */
-    private function buildBaseFields(array $normalized): array
-    {
-        $base = [];
-
-        if ($this->mode === EcsFormatMode::Copy) {
-            // Seed legacy top-level keys first so ECS fields overlay them.
-            $base['channel'] = $normalized['channel'];
-            $base['level_name'] = $normalized['level_name'];
-            $base['level'] = $normalized['level'];
-            $base['datetime'] = $normalized['datetime'];
-        }
-
-        $base['message'] = $normalized['message'];
-        $base['event'] = [
-            'kind' => 'event',
-            'module' => 'symfony',
-            'dataset' => 'symfony.logs',
-            'created' => $normalized['datetime'],
-            'severity' => $normalized['level'],
-        ];
-        $base['log'] = [
-            'level' => strtolower($normalized['level_name']),
-            'logger' => $normalized['channel'],
-        ];
-
-        return $base;
-    }
-
-    /**
-     * Lift the bounded ECS identity objects (service, error) from extra/context to top-level.
-     * Context wins over extra for the same key, mirroring namespace precedence.
-     * The promoted key is removed from the $extra/$context arrays passed by reference.
-     * This runs in both Move and Copy modes.
-     *
-     * @param array<string, mixed> $output
-     * @param array<string, mixed> $context (modified by reference — promoted keys removed)
-     * @param array<string, mixed> $extra   (modified by reference — promoted keys removed)
-     * @return array<string, mixed>
-     */
-    private function promoteEcsObjects(array $output, array &$context, array &$extra): array
-    {
-        foreach (['service', 'error'] as $key) {
-            $fromExtra = isset($extra[$key]) && is_array($extra[$key]) ? $extra[$key] : null;
-            $fromContext = isset($context[$key]) && is_array($context[$key]) ? $context[$key] : null;
-
-            if ($fromExtra !== null || $fromContext !== null) {
-                // Context wins: merge extra first, then context overwrites.
-                $merged = array_merge($fromExtra ?? [], $fromContext ?? []);
-                $output[$key] = $merged;
-
-                unset($extra[$key], $context[$key]);
-            }
-        }
-
-        return $output;
-    }
-
-    /**
-     * Extract known keys (labels, metric, text) from context, coerce values,
-     * and promote them to top-level output fields.
-     *
-     * Remainders are written back to $context by reference.
-     * extra is not scanned — it is re-emitted verbatim by the caller.
-     *
-     * @param array<string, mixed> $output
-     * @param array<string, mixed> $context
-     * @return array<string, mixed>
-     */
-    private function extractNamespaces(array $output, array &$context): array
-    {
-        foreach (self::EXTRACTABLE_KEYS as $key) {
-            $contextValues = $context[$key] ?? [];
-
-            unset($context[$key]);
-
-            if (!is_array($contextValues)) {
-                $contextValues = [$contextValues];
-            }
-
-            [$contextCoerced, $contextRemainder] = $this->coerceValues($key, $contextValues);
-
-            if ($contextRemainder) {
-                $context[$key] = $contextRemainder;
-            }
-
-            if ($contextCoerced) {
-                $output[$key] = $contextCoerced;
-            }
-        }
-
-        return $output;
-    }
-
-    /**
-     * Extract tags from context, deduplicate, and promote to top-level.
-     *
-     * Remainders are written back to $context by reference.
-     * extra is not scanned — it is re-emitted verbatim by the caller.
-     *
-     * @param array<string, mixed> $output
-     * @param array<string, mixed> $context
-     * @return array<string, mixed>
-     */
-    private function extractTags(array $output, array &$context): array
-    {
-        [$contextTags, $contextTagRemainder] = $this->partitionTags($context['tags'] ?? []);
-
-        unset($context['tags']);
-
-        if ($contextTagRemainder) {
-            $context['tags'] = $contextTagRemainder;
-        }
-
-        $mergedTags = array_values(array_unique($contextTags));
-
-        if ($mergedTags) {
-            $output['tags'] = $mergedTags;
-        }
-
-        return $output;
     }
 
     public function formatBatch(array $records): string
@@ -220,170 +106,211 @@ class EcsFieldsFormatter extends JsonFormatter
     }
 
     /**
-     * @param array<string, mixed> $values
-     * @return array{0: array<string, mixed>, 1: array<string, mixed>} [coerced, remainder]
-     */
-    private function coerceValues(string $namespace, array $values): array
-    {
-        return match ($namespace) {
-            'labels', 'text' => $this->partitionScalars($namespace, $values),
-            'metric' => $this->partitionMetrics($values),
-            default => [[], $values],
-        };
-    }
-
-    /**
-     * @param array<string, mixed> $values
-     * @return array{0: array<string, mixed>, 1: array<string, mixed>} [coerced, remainder]
-     */
-    private function partitionScalars(string $namespace, array $values): array
-    {
-        $coerced = [];
-        $remainder = [];
-
-        foreach ($values as $key => $value) {
-            if (count($coerced) >= self::MAX_KEYS[$namespace]) {
-                $remainder[$key] = $value;
-            } elseif (!$this->isValidKey($key)) {
-                $remainder[$key] = $value;
-            } elseif (is_scalar($value)) {
-                $coerced[$key] = (string)$value;
-            } else {
-                $remainder[$key] = $value;
-            }
-        }
-
-        return [$coerced, $remainder];
-    }
-
-    /**
-     * @param array<string, mixed> $values
-     * @return array{0: array<string, mixed>, 1: array<string, mixed>} [coerced, remainder]
-     */
-    private function partitionMetrics(array $values): array
-    {
-        $coerced = [];
-        $remainder = [];
-
-        foreach ($values as $key => $value) {
-            if (count($coerced) >= self::MAX_KEYS['metric']) {
-                $remainder[$key] = $value;
-            } elseif (!$this->isValidKey($key)) {
-                $remainder[$key] = $value;
-            } elseif ($this->hasPrefix($key, self::BOOL_PREFIXES) && is_scalar($value)) {
-                $coerced[$key] = (bool)$value;
-            } elseif ($this->hasSuffix($key, self::LONG_SUFFIXES)) {
-                if (is_numeric($value) && (int)$value == $value) {
-                    $coerced[$key] = (int)$value;
-                } else {
-                    $remainder[$key] = $value;
-                }
-            } elseif (is_numeric($value)) {
-                $coerced[$key] = (float)$value;
-            } else {
-                $remainder[$key] = $value;
-            }
-        }
-
-        return [$coerced, $remainder];
-    }
-
-    /**
-     * @param mixed $values
-     * @return array{0: list<string>, 1: list<mixed>} [validTags, remainder]
-     */
-    private function partitionTags(mixed $values): array
-    {
-        if (!is_array($values)) {
-            return $values !== null ? [[], [$values]] : [[], []];
-        }
-
-        $valid = [];
-        $remainder = [];
-
-        foreach ($values as $value) {
-            if (count($valid) >= self::MAX_TAGS) {
-                $remainder[] = $value;
-            } elseif (is_string($value) && $value !== '') {
-                $valid[] = $value;
-            } else {
-                $remainder[] = $value;
-            }
-        }
-
-        return [$valid, $remainder];
-    }
-
-    /**
-     * Converts dot-notation keys matching extractable namespaces into nested arrays.
-     * E.g. ['labels.env' => 'prod', 'user_id' => 42] → ['labels' => ['env' => 'prod'], 'user_id' => 42]
+     * Lift every EcsField out of $bag (by reference) and deep-merge its fragment into $fragments.
      *
-     * @param array<string, mixed> $data
+     * @param array<array-key, mixed> $bag       modified by reference — EcsField entries removed
+     * @param array<string, mixed>    $fragments accumulator, keyed by ECS field path
+     */
+    private function pullFields(array &$bag, array &$fragments): void
+    {
+        foreach ($bag as $key => $value) {
+            if (!$value instanceof EcsField) {
+                continue;
+            }
+
+            foreach ($value->toEcs() as $field => $payload) {
+                $normalized = $this->normalize($payload);
+                $fragments[$field] = $this->deepMerge($fragments[$field] ?? [], $normalized);
+            }
+
+            unset($bag[$key]);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $output
+     * @param array<string, mixed> $fragments
+     * @param array<string, mixed> $leftover  modified by reference — demotions/mirrors appended
      * @return array<string, mixed>
      */
-    private function unflattenDotKeys(array $data): array
+    private function mergeFragments(array $output, array $fragments, array &$leftover): array
     {
-        foreach (array_keys($data) as $key) {
-            $dotPos = strpos($key, '.');
+        foreach ($fragments as $field => $value) {
+            if ($field === 'tags') {
+                [$promoted, $rejected] = $this->partitionTags($value);
 
-            if ($dotPos === false) {
+                if ($promoted !== []) {
+                    $output['tags'] = $promoted;
+                }
+
+                $this->placeLeftover('tags', $value, $rejected, $leftover);
+            } elseif (isset(self::GOVERNED[$field])) {
+                $payload = is_array($value) ? $value : [];
+                [$promoted, $rejected] = $this->partitionNamespace($field, $payload);
+
+                if ($promoted !== []) {
+                    $output[$field] = $promoted;
+                }
+
+                $this->placeLeftover($field, $payload, $rejected, $leftover);
+            } elseif (in_array($field, self::PROTECTED_SCALARS, true)) {
                 continue;
+            } elseif (in_array($field, self::MERGE_UNDER_BASE, true)) {
+                // Additive: keep base values on conflict, but allow new sub-keys (e.g. log.origin).
+                $output[$field] = $this->deepMerge($value, $output[$field] ?? []);
+            } else {
+                $output[$field] = $this->deepMerge($output[$field] ?? [], $value);
             }
-
-            $prefix = substr($key, 0, $dotPos);
-
-            if (!in_array($prefix, self::EXTRACTABLE_KEYS, true)) {
-                continue;
-            }
-
-            $suffix = substr($key, $dotPos + 1);
-
-            if ($suffix === '' || str_contains($suffix, '.')) {
-                continue;
-            }
-
-            $data[$prefix] ??= [];
-
-            if (is_array($data[$prefix])) {
-                $data[$prefix][$suffix] = $data[$key];
-            }
-
-            unset($data[$key]);
         }
 
-        return $data;
-    }
-
-    private function isValidKey(string $key): bool
-    {
-        return preg_match(self::KEY_PATTERN, $key) === 1;
+        return $output;
     }
 
     /**
-     * @param string[] $suffixes
+     * Split a governed namespace into the promoted subset (valid key, within cap) and the rest.
+     *
+     * @param array<array-key, mixed> $payload
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>} [promoted, rejected]
      */
-    private function hasSuffix(string $key, array $suffixes): bool
+    private function partitionNamespace(string $namespace, array $payload): array
     {
-        foreach ($suffixes as $suffix) {
-            if (str_ends_with($key, $suffix)) {
-                return true;
+        $promoted = [];
+        $rejected = [];
+
+        foreach ($payload as $key => $value) {
+            $key = (string) $key;
+
+            if (Key::isValid($key) && count($promoted) < self::GOVERNED[$namespace]) {
+                $promoted[$key] = $value;
+            } else {
+                $rejected[$key] = $value;
             }
         }
 
-        return false;
+        return [$promoted, $rejected];
     }
 
     /**
-     * @param string[] $prefixes
+     * @return array{0: list<string>, 1: list<mixed>} [promoted, rejected]
      */
-    private function hasPrefix(string $key, array $prefixes): bool
+    private function partitionTags(mixed $value): array
     {
-        foreach ($prefixes as $prefix) {
-            if (str_starts_with($key, $prefix)) {
-                return true;
+        $tags = is_array($value) ? array_values($value) : [$value];
+
+        $promoted = [];
+        $rejected = [];
+
+        foreach ($tags as $tag) {
+            if (!is_string($tag) || $tag === '') {
+                $rejected[] = $tag;
+            } elseif (in_array($tag, $promoted, true)) {
+                continue; // de-duplicate (not data loss)
+            } elseif (count($promoted) >= self::MAX_TAGS) {
+                $rejected[] = $tag;
+            } else {
+                $promoted[] = $tag;
             }
         }
 
-        return false;
+        return [$promoted, $rejected];
+    }
+
+    /**
+     * Never-drop policy for what couldn't be promoted.
+     *   - Copy: mirror the full original payload under context.<namespace> for dashboard compatibility.
+     *   - Move: keep only the rejected entries, as dotted keys, in the leftover context.
+     *
+     * @param mixed                $full     the complete fragment payload for this namespace
+     * @param array<array-key, mixed> $rejected entries that were not promoted
+     * @param array<string, mixed> $leftover modified by reference
+     */
+    private function placeLeftover(string $namespace, mixed $full, array $rejected, array &$leftover): void
+    {
+        if ($this->mode === EcsFormatMode::Copy) {
+            if (is_array($full) && $full !== []) {
+                $leftover[$namespace] = $full;
+            }
+
+            return;
+        }
+
+        if ($namespace === 'tags') {
+            foreach ($rejected as $tag) {
+                $leftover['tags'][] = $tag;
+            }
+
+            return;
+        }
+
+        foreach ($rejected as $key => $value) {
+            $leftover["{$namespace}.{$key}"] = $value;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildBaseFields(LogRecord $record, string $datetime): array
+    {
+        $levelName = $record->level->getName();
+
+        $output = [
+            '@timestamp' => $datetime,
+            'log.level' => strtolower($levelName),
+            'message' => $record->message,
+            'ecs.version' => self::ECS_VERSION,
+            'log' => ['logger' => $record->channel],
+            'event' => [
+                'kind' => 'event',
+                'module' => 'symfony',
+                'dataset' => 'symfony.logs',
+                'created' => $datetime,
+                'severity' => $record->level->value,
+            ],
+        ];
+
+        if ($this->mode === EcsFormatMode::Copy) {
+            $output['channel'] = $record->channel;
+            $output['level_name'] = $levelName;
+            $output['level'] = $record->level->value;
+            $output['datetime'] = $datetime;
+        }
+
+        return $output;
+    }
+
+    private function formatDatetime(LogRecord $record): string
+    {
+        $normalized = $this->normalize($record->datetime);
+
+        return is_string($normalized) ? $normalized : $record->datetime->format('Y-m-d\TH:i:s.uP');
+    }
+
+    /**
+     * @param array<array-key, mixed> $data
+     * @return array<array-key, mixed>
+     */
+    private function normalizeArray(array $data): array
+    {
+        if ($data === []) {
+            return [];
+        }
+
+        $normalized = $this->normalize($data);
+
+        return is_array($normalized) ? $normalized : [];
+    }
+
+    private function deepMerge(mixed $a, mixed $b): mixed
+    {
+        if (is_array($a) && is_array($b)) {
+            foreach ($b as $key => $value) {
+                $a[$key] = array_key_exists($key, $a) ? $this->deepMerge($a[$key], $value) : $value;
+            }
+
+            return $a;
+        }
+
+        return $b;
     }
 }

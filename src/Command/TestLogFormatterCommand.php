@@ -4,6 +4,15 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Command;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
+use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Labels;
+use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
+use Herdwatch\MonologEcsFormatter\Ecs\Service;
+use Herdwatch\MonologEcsFormatter\Ecs\Tags;
+use Herdwatch\MonologEcsFormatter\Ecs\Text;
+use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
+use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -25,88 +34,80 @@ class TestLogFormatterCommand extends Command
     {
         $output->writeln('Emitting sample log entries...');
 
-        // 1. Labels only
+        // 1. Labels only (passed positionally — the key is irrelevant, detection is by type).
         $this->logger->notice('User login succeeded.', [
-            'labels' => ['user_id' => (string) random_int(1, 999), 'env' => 'staging'],
+            Labels::create()->add('user_id', (string) random_int(1, 999))->add('env', 'staging'),
         ]);
 
-        // 2. Metrics with known suffixes
+        // 2. Metrics — the method fixes the JSON type (count/total → int, gauge → float, flag → bool).
         $this->logger->notice('Request processed.', [
-            'metric' => [
-                'duration_ms' => round(random_int(50, 500) + lcg_value(), 1),
-                'retry_count' => random_int(0, 5),
-                'payload_bytes' => random_int(256, 8192),
-                'success_rate' => round(lcg_value() * 0.5 + 0.5, 2),
-            ],
+            Metrics::create()
+                ->gauge('duration_ms', round(random_int(50, 500) + lcg_value(), 1))
+                ->count('retry_count', random_int(0, 5))
+                ->total('payload_bytes', random_int(256, 8192))
+                ->gauge('success_rate', round(lcg_value() * 0.5 + 0.5, 2))
+                ->flag('is_cached', (bool) random_int(0, 1)),
         ]);
 
-        // 3. Boolean metrics (is_* keys are coerced to bool and promoted under metric)
-        $this->logger->notice('Cache lookup.', [
-            'metric' => ['is_cached' => (bool) random_int(0, 1), 'is_retry' => (bool) random_int(0, 1)],
-        ]);
-
-        // 4. Text
+        // 3. Free-form text.
         $this->logger->warning('Validation failed.', [
-            'text' => ['reason' => 'Missing required field "email"'],
+            Text::create()->add('reason', 'Missing required field "email"'),
         ]);
 
-        // 5. Tags (ECS base field: flat array of keyword strings)
-        $this->logger->notice('Incoming API request.', [
-            'tags' => ['web', 'api', 'production'],
-            'labels' => ['endpoint' => '/api/v1/sync'],
-        ]);
-
-        // 6. Mixed: labels + metrics + tags + non-extractable context
+        // 4. Mixed bags in one call — they merge by namespace.
         $this->logger->notice('Sync batch completed.', [
-            'labels' => ['profile_id' => 'P-' . random_int(100, 999), 'sequence' => 'nightly'],
-            'metric' => ['duration_ms' => random_int(1000, 10000), 'items_count' => random_int(10, 500)],
-            'tags' => ['sync', 'batch'],
-            'request_id' => 'req-' . bin2hex(random_bytes(4)),
+            Labels::create()->add('profile_id', 'P-' . random_int(100, 999))->add('sequence', 'nightly'),
+            Metrics::create()->gauge('duration_ms', random_int(1000, 10000))->count('items_count', random_int(10, 500)),
+            Tags::of('sync', 'batch'),
+            'request_id' => 'req-' . bin2hex(random_bytes(4)), // plain context — stays under "context"
         ]);
 
-        // 7. Metric validation: type coercion and rejection
-        $this->logger->notice('Metric validation.', [
-            'metric' => [
-                'duration_ms' => random_int(50, 300),   // numeric → double
-                'latency_ms' => 'not-a-number',         // non-numeric → context
-                'batch_count' => round(random_int(5, 15) + lcg_value(), 1), // fractional _count → context (not a whole number)
-                'custom_ms' => round(random_int(10, 100) + lcg_value(), 1), // numeric → double
-            ],
+        // 5. Identity objects: service / user / tracing.
+        $this->logger->info('Authenticated request.', [
+            new Service('demo-service', version: '1.4.0', environment: 'staging'),
+            new User(id: random_int(1, 9999), email: 'farmer@example.com'),
+            new Tracing(bin2hex(random_bytes(8)), bin2hex(random_bytes(4))),
         ]);
 
-        // 8. Key format validation: rejected key formats land in context
-        $this->logger->notice('Key format validation.', [
-            'labels' => [
-                'env' => 'prod',                    // valid: single segment
-                'user_id' => '42',                  // valid: two segments
-                'User_Id' => 'rejected',            // invalid: uppercase
-                'a_b_c_d' => 'rejected',            // invalid: 4 segments
-            ],
+        // 6. Exceptions via EcsError (captures error.type, message, code, stack_trace).
+        $this->logger->error('Sync failed.', [
+            new EcsError(new \RuntimeException('Upstream timed out', 504)),
         ]);
 
-        // 9. Nested values (should remain in context)
-        $readMs = random_int(30, 150);
-        $writeMs = random_int(50, 200);
-        $this->logger->notice('Nested value test.', [
-            'labels' => [
-                'env' => 'prod',
-                'tags' => ['web', 'api'],
-            ],
-            'metric' => [
-                'duration_ms' => $readMs + $writeMs,
-                'breakdown' => ['read_ms' => $readMs, 'write_ms' => $writeMs],
-            ],
+        // 7. Building a bag from an existing array (the escape hatch — still validated/coerced).
+        $this->logger->notice('Imported counters.', [
+            Metrics::fromArray(['rows_total' => 1200, 'skipped_count' => 14, 'avg_ms' => 8.3]),
         ]);
 
-        // 10. Flat context with no extractable namespaces (kept as-is under context)
+        // 8. Over-cap + invalid key are never dropped — they fall to "context" with dotted keys (move mode).
+        $manyLabels = Labels::create();
+        for ($i = 1; $i <= 10; $i++) {
+            $manyLabels->add("key$i", "val$i"); // cap is 8 → key9/key10 demoted to context.labels.*
+        }
+        $manyLabels->add('Bad Key', 'demoted'); // invalid key → demoted to context.'labels.Bad Key'
+        $this->logger->notice('Cap and key-format demo.', [$manyLabels]);
+
+        // 9. A project-specific EcsField is detected automatically (no registration needed).
+        $farmContext = new class (random_int(1000, 9999), 'munster') implements EcsField {
+            public function __construct(private int $herdId, private string $region)
+            {
+            }
+
+            public function toEcs(): array
+            {
+                return ['farm' => ['herd_id' => $this->herdId, 'region' => $this->region]];
+            }
+        };
+        $this->logger->notice('Herd sync complete.', [$farmContext]);
+
+        // 10. Plain message, no structured fields.
         $this->logger->notice('Plain message with no structured fields.', [
-            'user_id' => 42,
             'action' => 'export',
         ]);
 
-        // 11. Message with newlines
+        // 11. Message with newlines (NDJSON must keep it on one line).
         $this->logger->error("Multi-line error message.\nStack trace line 1.\nStack trace line 2.", [
-            'labels' => ['component' => 'parser'],
+            Labels::create()->add('component', 'parser'),
         ]);
 
         $output->writeln('Done. Check log output for formatted entries.');

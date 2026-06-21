@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Tests;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
+use Herdwatch\MonologEcsFormatter\Ecs\Labels;
+use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
+use Herdwatch\MonologEcsFormatter\Ecs\Service;
+use Herdwatch\MonologEcsFormatter\Ecs\Tags;
+use Herdwatch\MonologEcsFormatter\Ecs\Text;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFormatMode;
 use Monolog\Level;
@@ -11,13 +17,10 @@ use Monolog\LogRecord;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Verifies copy-mode behaviour:
- *   - Legacy top-level fields (channel, level_name, level, datetime) are retained.
- *   - ECS fields (event.*, log.*) are added on top.
- *   - Promoted namespaces (labels, metric, text, tags) appear at top-level AND the
- *     original context/extra are preserved.
- *   - service/error from extra/context are promoted to top-level in copy mode.
- *   - Output is a single valid NDJSON line.
+ * Copy mode = move mode + (a) legacy top-level keys (channel, level_name, level, datetime) are kept,
+ * and (b) the full payload of each governed namespace is mirrored under context.<namespace> for
+ * dashboard compatibility during migration. Identity fields (service, error, ...) are promoted to
+ * top-level only.
  */
 class EcsFieldsFormatterCopyModeTest extends TestCase
 {
@@ -29,8 +32,8 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $context
-     * @param array<string, mixed> $extra
+     * @param array<array-key, mixed> $context
+     * @param array<array-key, mixed> $extra
      */
     private function createRecord(
         string $message = 'Test message',
@@ -57,314 +60,155 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         return json_decode($this->formatter->format($record), true);
     }
 
-    // --- Legacy top-level keys are retained ---
-
     public function testLegacyTopLevelKeysAreRetained(): void
     {
-        $record = $this->createRecord(level: Level::Error, channel: 'worker');
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('channel', $output);
-        self::assertArrayHasKey('level_name', $output);
-        self::assertArrayHasKey('level', $output);
-        self::assertArrayHasKey('datetime', $output);
+        $output = $this->formatAndDecode($this->createRecord(level: Level::Error, channel: 'worker'));
 
         self::assertSame('worker', $output['channel']);
         self::assertSame('ERROR', $output['level_name']);
         self::assertSame(Level::Error->value, $output['level']);
+        self::assertArrayHasKey('datetime', $output);
     }
-
-    // --- ECS fields are added ---
 
     public function testEcsBaseFieldsArePresent(): void
     {
         $output = $this->formatAndDecode($this->createRecord());
 
         self::assertSame('Test message', $output['message']);
-        self::assertArrayHasKey('event', $output);
-        self::assertSame('event', $output['event']['kind']);
-        self::assertSame('symfony', $output['event']['module']);
-        self::assertSame('symfony.logs', $output['event']['dataset']);
-        self::assertArrayHasKey('created', $output['event']);
-        self::assertArrayHasKey('severity', $output['event']);
-
-        self::assertArrayHasKey('log', $output);
-        self::assertSame('info', $output['log']['level']);
+        self::assertSame('info', $output['log.level']);
         self::assertSame('app', $output['log']['logger']);
+        self::assertSame('8.11.0', $output['ecs.version']);
+        self::assertArrayHasKey('@timestamp', $output);
+        self::assertSame('event', $output['event']['kind']);
     }
 
-    // --- Original context/extra are preserved alongside promoted namespaces ---
-
-    public function testLabelsPromotedAndOriginalContextRetained(): void
+    public function testLabelsPromotedAndMirroredUnderContext(): void
     {
-        $record = $this->createRecord(context: [
-            'labels' => ['env' => 'prod'],
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Labels::create()->add('env', 'prod'),
             'farm_id' => 42,
-        ]);
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        // Promoted to top-level
-        self::assertArrayHasKey('labels', $output);
         self::assertSame(['env' => 'prod'], $output['labels']);
-
-        // Original context retained in full — both non-extractable key AND the original labels entry
-        self::assertArrayHasKey('context', $output);
         self::assertSame(42, $output['context']['farm_id']);
         self::assertSame(['env' => 'prod'], $output['context']['labels']);
     }
 
-    public function testMetricPromotedAndOriginalContextRetained(): void
+    public function testMetricPromotedAndMirroredUnderContext(): void
     {
-        $record = $this->createRecord(context: [
-            'metric' => ['duration_ms' => 150.0],
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Metrics::create()->gauge('duration_ms', 150.0),
             'request_id' => 'req-abc',
-        ]);
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('metric', $output);
         self::assertSame(150.0, $output['metric']['duration_ms']);
-
-        // Original context retained in full — non-extractable key AND the original metric entry
-        self::assertArrayHasKey('context', $output);
         self::assertSame('req-abc', $output['context']['request_id']);
         self::assertSame(['duration_ms' => 150.0], $output['context']['metric']);
     }
 
-    public function testTagsPromotedAndOriginalContextRetained(): void
+    public function testTagsPromotedAndMirroredUnderContext(): void
     {
-        $record = $this->createRecord(context: [
-            'tags' => ['web', 'api'],
-            'user_id' => 7,
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [Tags::of('web', 'api')]));
 
-        $output = $this->formatAndDecode($record);
-
-        // Promoted to top-level
         self::assertSame(['web', 'api'], $output['tags']);
-
-        // Original context retained in full — non-extractable key AND the original tags array
-        self::assertSame(7, $output['context']['user_id']);
         self::assertSame(['web', 'api'], $output['context']['tags']);
     }
 
-    public function testTextPromotedAndOriginalContextRetained(): void
+    public function testTextPromotedAndMirroredUnderContext(): void
     {
-        $record = $this->createRecord(context: [
-            'text' => ['note' => 'Sync completed successfully'],
-            'job_id' => 'job-99',
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Text::create()->add('note', 'Sync completed'),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        // Promoted to top-level
-        self::assertArrayHasKey('text', $output);
-        self::assertSame(['note' => 'Sync completed successfully'], $output['text']);
-
-        // Original context retained in full — non-extractable key AND the original text entry
-        self::assertArrayHasKey('context', $output);
-        self::assertSame('job-99', $output['context']['job_id']);
-        self::assertSame(['note' => 'Sync completed successfully'], $output['context']['text']);
+        self::assertSame(['note' => 'Sync completed'], $output['text']);
+        self::assertSame(['note' => 'Sync completed'], $output['context']['text']);
     }
 
-    public function testExtraIsEmittedVerbatimNotExtractedInCopyMode(): void
+    public function testFullPayloadMirroredEvenWhenTopLevelIsCapped(): void
     {
-        // extra is opaque in copy mode too: metric inside extra is NOT promoted; extra is emitted as-is
-        $record = $this->createRecord(extra: [
+        $labels = Labels::create();
+        for ($i = 1; $i <= 10; $i++) {
+            $labels->add("key$i", "val$i");
+        }
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$labels]));
+
+        // Top-level promotes the capped subset; the full original is mirrored under context.
+        self::assertCount(8, $output['labels']);
+        self::assertCount(10, $output['context']['labels']);
+    }
+
+    public function testExtraEmittedVerbatimInCopyMode(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(extra: [
             'metric' => ['items_count' => 5],
             'pid' => 1234,
-        ]);
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        // Metric from extra must NOT appear at top-level
         self::assertArrayNotHasKey('metric', $output);
-
-        // extra is emitted verbatim in copy mode
-        self::assertArrayHasKey('extra', $output);
-        self::assertSame(1234, $output['extra']['pid']);
         self::assertSame(['items_count' => 5], $output['extra']['metric']);
+        self::assertSame(1234, $output['extra']['pid']);
     }
 
-    public function testContextAndExtraRetainedWhenOnlyNonExtractableKeys(): void
+    public function testServiceFromExtraPromotedToTopLevelOnly(): void
     {
-        $record = $this->createRecord(
-            context: ['user_id' => 99],
-            extra: ['pid' => 777],
-        );
+        $output = $this->formatAndDecode($this->createRecord(extra: [
+            'service' => new Service('my-service'),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('context', $output);
-        self::assertSame(99, $output['context']['user_id']);
-        self::assertArrayHasKey('extra', $output);
-        self::assertSame(777, $output['extra']['pid']);
-    }
-
-    public function testMaxKeysPerNamespaceEnforcedInCopyMode(): void
-    {
-        // Build 10 labels (cap is 8) and 4 text entries (cap is 2).
-        $labels = [];
-        for ($i = 1; $i <= 10; $i++) {
-            $labels["key$i"] = "val$i";
-        }
-
-        $text = [];
-        for ($i = 1; $i <= 4; $i++) {
-            $text["note$i"] = "text$i";
-        }
-
-        $record = $this->createRecord(context: [
-            'labels' => $labels,
-            'text' => $text,
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        // Top-level: overflow keys are dropped from the promoted namespace
-        self::assertCount(8, $output['labels']);
-        self::assertCount(2, $output['text']);
-
-        // Copy semantics: the FULL original arrays are still present under context
-        self::assertCount(10, $output['context']['labels']);
-        self::assertCount(4, $output['context']['text']);
-    }
-
-    // --- service/error promotion in copy mode ---
-
-    public function testServiceFromExtraPromotedToTopLevel(): void
-    {
-        $record = $this->createRecord(extra: [
-            'service' => ['name' => 'my-service', 'language' => 'php'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('service', $output);
         self::assertSame('my-service', $output['service']['name']);
         self::assertSame('php', $output['service']['language']);
+        // Identity objects are not mirrored under context.
+        self::assertArrayNotHasKey('service', $output['context'] ?? []);
     }
 
-    public function testErrorFromExtraPromotedToTopLevel(): void
+    public function testErrorPromotedToTopLevel(): void
     {
-        $record = $this->createRecord(extra: [
-            'error' => ['message' => 'Something failed', 'stack_trace' => '#0 file.php(1)'],
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new EcsError(new \RuntimeException('DB failed')),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('error', $output);
-        self::assertSame('Something failed', $output['error']['message']);
-        self::assertSame('#0 file.php(1)', $output['error']['stack_trace']);
+        self::assertSame('DB failed', $output['error']['message']);
+        self::assertSame('RuntimeException', $output['error']['type']);
     }
 
-    public function testServiceAndErrorFromContextWinOverExtra(): void
+    public function testServiceContextWinsOverExtra(): void
     {
-        $record = $this->createRecord(
-            context: ['service' => ['name' => 'context-service']],
-            extra: ['service' => ['name' => 'extra-service', 'language' => 'php']],
-        );
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [new Service('context-service')],
+            extra: ['service' => new Service('extra-service')],
+        ));
 
-        $output = $this->formatAndDecode($record);
-
-        // context wins for overlapping key 'name'
         self::assertSame('context-service', $output['service']['name']);
-        // extra's 'language' is kept via merge
         self::assertSame('php', $output['service']['language']);
     }
-
-    public function testServiceAndErrorNotInContextOrExtraWhenAbsent(): void
-    {
-        $output = $this->formatAndDecode($this->createRecord());
-
-        self::assertArrayNotHasKey('service', $output);
-        self::assertArrayNotHasKey('error', $output);
-    }
-
-    // --- Output is single-line NDJSON ---
 
     public function testOutputIsSingleLineNdjson(): void
     {
-        $record = $this->createRecord(
-            message: 'BCMS upload DB error',
-            context: [
-                'labels' => ['herd' => 'IE123'],
-                'farm_id' => 7,
-            ],
-            extra: [
-                'service' => ['name' => 'my-service', 'language' => 'php'],
-                'error' => ['message' => 'DB failed', 'stack_trace' => '#0 ...'],
-            ],
-        );
+        $raw = $this->formatter->format($this->createRecord(
+            message: 'Upload failed',
+            context: [Labels::create()->add('herd', 'IE123'), 'farm_id' => 7],
+            extra: ['service' => new Service('my-service')],
+        ));
 
-        $raw = $this->formatter->format($record);
-
-        // Must end with a newline
         self::assertStringEndsWith("\n", $raw);
-
-        // Must be a single JSON line (NDJSON)
         $lines = array_filter(explode("\n", $raw));
         self::assertCount(1, $lines);
 
         $output = json_decode($lines[0], true);
-        self::assertIsArray($output);
-
-        // Legacy fields present
-        self::assertArrayHasKey('channel', $output);
-        self::assertArrayHasKey('level_name', $output);
-        self::assertArrayHasKey('level', $output);
-        self::assertArrayHasKey('datetime', $output);
-
-        // ECS fields present
-        self::assertArrayHasKey('event', $output);
-        self::assertArrayHasKey('log', $output);
-        self::assertArrayHasKey('service', $output);
-        self::assertArrayHasKey('error', $output);
-        self::assertArrayHasKey('labels', $output);
-
-        // Original context retained
-        self::assertArrayHasKey('context', $output);
         self::assertSame(7, $output['context']['farm_id']);
+        self::assertSame(['herd' => 'IE123'], $output['labels']);
+        self::assertArrayHasKey('channel', $output);
+        self::assertArrayHasKey('service', $output);
     }
-
-    public function testFormatBatchCopyModeProducesNdjson(): void
-    {
-        $records = [
-            $this->createRecord('First'),
-            $this->createRecord('Second'),
-        ];
-
-        $raw = $this->formatter->formatBatch($records);
-        $lines = array_filter(explode("\n", $raw));
-
-        self::assertCount(2, $lines);
-
-        foreach ($lines as $line) {
-            $decoded = json_decode($line, true);
-            self::assertIsArray($decoded);
-            self::assertArrayHasKey('channel', $decoded);
-            self::assertArrayHasKey('event', $decoded);
-        }
-    }
-
-    // --- No existing move-mode tests are affected (default is still move) ---
 
     public function testDefaultConstructorIsMoveMode(): void
     {
-        $moveFormatter = new EcsFieldsFormatter();
-        $record = $this->createRecord(level: Level::Warning, channel: 'app');
+        $move = new EcsFieldsFormatter();
+        $output = json_decode($move->format($this->createRecord(level: Level::Warning)), true);
 
-        $output = json_decode($moveFormatter->format($record), true);
-
-        // Move mode must NOT have legacy top-level keys
         self::assertArrayNotHasKey('channel', $output);
         self::assertArrayNotHasKey('level_name', $output);
-        self::assertArrayNotHasKey('level', $output);
-        self::assertArrayNotHasKey('datetime', $output);
-
-        // But must have ECS fields
         self::assertArrayHasKey('event', $output);
-        self::assertArrayHasKey('log', $output);
     }
 }

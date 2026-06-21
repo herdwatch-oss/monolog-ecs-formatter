@@ -1,6 +1,32 @@
 # herdwatch-oss/monolog-ecs-formatter
 
-Monolog formatter and Symfony bundle that promotes structured log context (`labels`, `metric`, `text`, `tags`, `service`, `error`) to top-level ECS-aligned JSON fields for clean Elasticsearch mapping, with `copy`/`move` modes for a non-destructive migration.
+A Monolog formatter and Symfony bundle that promotes **typed ECS value objects** from a log's context to top-level ECS-aligned JSON fields, for clean Elasticsearch mapping.
+
+You log structured data as small typed objects — `Metrics`, `Labels`, `Text`, `Tags`, `Service`, `User`, `Tracing`, `EcsError`, or any of your own — and the formatter lifts them to the correct ECS location with key validation, per-namespace caps, and a never-drop guarantee. The JSON type of each value is fixed by the object's method signatures, so there is no guesswork or formatter-side coercion.
+
+```php
+use Herdwatch\MonologEcsFormatter\Ecs\{Metrics, Labels, Tags, Service, EcsError};
+
+$log->info('Order processed', [
+    Metrics::create()->total('orders_total', 1200)->gauge('latency_ms', 12.5)->flag('is_retry', false),
+    Labels::create()->add('tenant', 'acme')->add('env', 'prod'),
+    Tags::of('billing', 'reconciliation'),
+]);
+```
+
+```json
+{
+  "@timestamp": "2026-06-21T09:14:02.481139+00:00",
+  "log.level": "info",
+  "message": "Order processed",
+  "ecs.version": "8.11.0",
+  "log": {"logger": "app"},
+  "event": {"kind": "event", "module": "symfony", "dataset": "symfony.logs", "created": "2026-06-21T09:14:02.481139+00:00", "severity": 200},
+  "metric": {"orders_total": 1200, "latency_ms": 12.5, "is_retry": false},
+  "labels": {"tenant": "acme", "env": "prod"},
+  "tags": ["billing", "reconciliation"]
+}
+```
 
 ## Installation
 
@@ -20,64 +46,118 @@ Create `config/packages/monolog_ecs_formatter.yaml`:
 
 ```yaml
 monolog_ecs_formatter:
-    mode: copy                  # "move" (default) or "copy" — see Modes below
+    mode: move                  # "move" (default) or "copy" — see Modes below
     service_name: my-service    # optional; enables the EcsIdentityProcessor when set
 ```
 
-## Modes
+## Passing fields
 
-### `move` (default)
+Fields are detected by `instanceof`, **not** by array key — so the key is irrelevant. Pass them positionally (cleanest) or under any key; both work, and ordinary context entries flow through untouched:
 
-Fields from `context`/`extra` matching the ECS namespaces (`labels`, `metric`, `text`, `tags`) are relocated to top-level JSON fields. The originals are removed. Legacy top-level keys (`channel`, `level_name`, `level`, `datetime`) are **not** emitted.
+```php
+$log->info('User authenticated', [
+    new Service('billing-svc', version: '1.4.0', environment: 'prod'),
+    new User(id: 42, email: 'farmer@example.com'),
+    new Tracing($traceId, $transactionId),
+    'request_id' => $requestId,        // plain context — stays under "context", not promoted
+]);
+```
 
-Use this for a clean ECS-only log shape.
+Multiple bags of the same kind merge. `EcsField` objects are detected in **both** `context` and `extra` (context wins on a conflict) — this is how the identity processor's injected objects get promoted. Anything that is **not** an `EcsField` is left alone: non-field context goes under a leftover `context` object, and `extra` is emitted verbatim.
 
-### `copy`
+## Governed namespaces (bags)
 
-All existing top-level keys (`channel`, `level_name`, `level`, `datetime`) and the original `context`/`extra` contents are **retained**. ECS fields (`event.*`, `log.*`, and any promoted namespaces) are **added on top**.
+| Bag | ECS field | Value typing | Cap |
+|-----|-----------|--------------|-----|
+| `Metrics` | `metric.*` | `count()`/`total()` → int, `gauge()` → float, `flag()` → bool | 8 keys |
+| `Labels` | `labels.*` | scalars coerced to string | 8 keys |
+| `Text` | `text.*` | strings | 2 keys |
+| `Tags` | `tags` | de-duplicated keyword strings | 8 |
 
-Use this for a non-destructive transition while existing dashboards/queries still reference legacy field names.
+Keys must match `/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/` (lower snake_case, ≤ 3 segments).
+
+**Nothing is ever dropped.** A key that fails validation or exceeds the cap is preserved:
+- **Move mode:** demoted into the leftover `context` with a dotted key — e.g. `Labels::create()->add('Bad Key', 'x')` ends up as `"context": {"labels.Bad Key": "x"}`.
+- **Copy mode:** the full original payload is mirrored under `context.<namespace>` (see Modes).
+
+### Building a bag from an array
+
+When you already hold an array (config-driven logging, generic middleware), use the `fromArray()` factories — values still go through the bag's typing/validation:
+
+```php
+Metrics::fromArray(['rows_total' => 1200, 'avg_ms' => 8.3]); // non-numeric values are ignored
+Labels::fromArray($keyValuePairs);
+Tags::fromArray($list);
+```
+
+## Identity fields
+
+| Object | ECS fields |
+|--------|-----------|
+| `Service` | `service.name`, `service.language` (default `php`), and optional `version`, `environment`, `node.name` |
+| `User` | `user.id`, `name`, `email`, `domain`, `full_name`, `hash` (null fields omitted) |
+| `Tracing` | `trace.id`, `transaction.id` — for logs ↔ APM correlation |
+| `EcsError` | `error.type` (exception class), `message`, `code`, `stack_trace` |
+
+```php
+$log->error('Sync failed', [new EcsError($exception)]);
+```
+
+## Project-specific fields
+
+Any class implementing `EcsField` is detected automatically — no registration, no formatter change:
+
+```php
+use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+
+final class FarmContext implements EcsField
+{
+    public function __construct(private string $herdId, private string $region) {}
+
+    public function toEcs(): array
+    {
+        return ['farm' => ['herd_id' => $this->herdId, 'region' => $this->region]];
+    }
+}
+
+$log->info('Herd sync complete', [new FarmContext($herd->id(), $herd->region())]);
+// → { …, "farm": {"herd_id": "…", "region": "…"} }
+```
+
+Rules that keep this safe:
+- A fragment targeting a governed namespace (`metric`/`labels`/`text`/`tags`) is validated and capped like any bag, whatever produced it.
+- Unknown namespaces and new top-level fields pass through.
+- A fragment can never overwrite the base skeleton (`@timestamp`, `log.level`, `message`, `ecs.version`); contributions to `log`/`event` (e.g. `log.origin`) are merged additively, with the base winning conflicts.
+
+To apply a custom field to **every** record, inject it from a Monolog processor (the pattern the bundled identity processor uses).
 
 ## ECS base fields emitted on every record
 
 | Field | Value |
 |-------|-------|
+| `@timestamp` | record datetime, ISO-8601 with microseconds |
+| `log.level` | lowercased level name (dotted top-level key, per the ecs-logging spec) |
 | `message` | log message |
-| `event.kind` | `event` |
-| `event.module` | `symfony` |
-| `event.dataset` | `symfony.logs` |
-| `event.created` | record datetime |
-| `event.severity` | Monolog level integer |
-| `log.level` | lowercased level name |
+| `ecs.version` | `8.11.0` |
 | `log.logger` | channel name |
-
-## Promoted namespaces
-
-These namespaces are read from the log **context** only and promoted to ECS top-level fields.
-`extra` is treated as opaque processor data and is re-emitted verbatim — its contents are never scanned for extractable namespaces.
-
-| Key | Type | Notes |
-|-----|------|-------|
-| `labels` | `string` values | filtering dimensions; max 8 keys |
-| `metric` | typed numbers | `*_count`/`*_total` → int, `is_*` → bool, else float; max 8 keys |
-| `text` | `string` values | long text; max 2 keys |
-| `tags` | `string[]` | flat unique keyword array; max 8 |
-
-Keys must match `/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/`. Non-conforming keys fall back to `context` remainder (never dropped). Dot-notation (`labels.env`) in context is unflattened automatically; dot-notation keys in `extra` are left as-is.
+| `event.kind` / `module` / `dataset` | `event` / `symfony` / `symfony.logs` |
+| `event.created` / `severity` | record datetime / Monolog level integer |
 
 ## Identity processor (`service.*` / `error.*`)
 
-When `service_name` is configured, `EcsIdentityProcessor` is registered as a global Monolog processor and adds the fields below. Omitting `service_name` disables the processor entirely — no `service.*` or `error.*` fields will appear in logs.
+When `service_name` is configured, `EcsIdentityProcessor` is registered as a global Monolog processor. It injects a `Service` object into every record and, when `context['exception']` is a `\Throwable`, an `EcsError` object — both of which the formatter then promotes. Omitting `service_name` disables it entirely.
 
-- `service.name` = configured value (e.g. `my-service`)
-- `service.language` = `php`
-- `error.message` + `error.stack_trace` — only when `context['exception']` is a `\Throwable`
+## Modes
 
-The processor writes `service` and `error` into `extra`. The formatter promotes both fields to top-level ECS fields in both move and copy modes, regardless of whether they originate from `extra` or `context`.
+### `move` (default)
 
-## Wiring formatters in `monolog.yaml`
+ECS fields are promoted to top-level; everything else stays under `context`/`extra`. No legacy top-level keys. Use this for a clean ECS-only shape.
 
-For standard stream handlers:
+### `copy`
+
+A non-destructive transition mode: the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`) are kept **and** each governed namespace is mirrored under `context.<namespace>` (the full, uncapped payload), so dashboards querying the old `context.*` paths keep working while you migrate them to the promoted top-level fields.
+
+## Wiring the formatter in `monolog.yaml`
 
 ```yaml
 monolog:
@@ -88,10 +168,9 @@ monolog:
             formatter: Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter
 ```
 
-For service-type handlers (e.g. a custom stream handler wired in `services.yaml`):
+For service-type handlers wired in `services.yaml`:
 
 ```yaml
-# config/services.yaml
 MyApp\Monolog\Handler\MyStreamHandler:
     calls:
         - [setFormatter, ['@Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter']]
@@ -99,13 +178,11 @@ MyApp\Monolog\Handler\MyStreamHandler:
 
 ## Test command
 
-In `dev`/`test` environments the bundle registers a console command to verify formatter output:
+In `dev`/`test` environments the bundle registers a console command that emits sample records covering every field type, the governance rules, and a custom `EcsField`:
 
 ```bash
 bin/console monolog-ecs:test
 ```
-
-This emits sample log records covering the promoted namespaces, metric coercion, key-format validation, and edge cases. Inspect the log file (or stdout) to confirm the NDJSON shape matches expectations.
 
 ## License
 

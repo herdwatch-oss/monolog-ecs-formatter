@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Tests\Processor;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
+use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Processor\EcsIdentityProcessor;
 use Monolog\Level;
 use Monolog\LogRecord;
@@ -12,8 +14,8 @@ use PHPUnit\Framework\TestCase;
 class EcsIdentityProcessorTest extends TestCase
 {
     /**
-     * @param array<string, mixed> $context
-     * @param array<string, mixed> $extra
+     * @param array<array-key, mixed> $context
+     * @param array<array-key, mixed> $extra
      */
     private function createRecord(
         string $message = 'Test message',
@@ -30,107 +32,88 @@ class EcsIdentityProcessorTest extends TestCase
         );
     }
 
-    // --- service.* always set ---
+    // --- service object always injected ---
 
-    public function testServiceNameAndLanguageAlwaysSet(): void
+    public function testServiceObjectInjectedIntoExtra(): void
     {
-        $processor = new EcsIdentityProcessor('my-service');
-        $result = $processor($this->createRecord());
+        $result = (new EcsIdentityProcessor('my-service'))($this->createRecord());
 
-        self::assertArrayHasKey('service', $result->extra);
-        self::assertSame('my-service', $result->extra['service']['name']);
-        self::assertSame('php', $result->extra['service']['language']);
+        self::assertInstanceOf(Service::class, $result->extra['service']);
+        self::assertSame(
+            ['service' => ['name' => 'my-service', 'language' => 'php']],
+            $result->extra['service']->toEcs(),
+        );
     }
 
     public function testServiceNameIsInjectedValue(): void
     {
-        $processor = new EcsIdentityProcessor('my-other-service');
-        $result = $processor($this->createRecord());
+        $result = (new EcsIdentityProcessor('my-other-service'))($this->createRecord());
 
-        self::assertSame('my-other-service', $result->extra['service']['name']);
+        self::assertSame('my-other-service', $result->extra['service']->toEcs()['service']['name']);
     }
 
-    public function testServiceLanguageDefaultsToPhp(): void
-    {
-        $processor = new EcsIdentityProcessor('svc');
-        $result = $processor($this->createRecord());
+    // --- error object only on a Throwable context exception ---
 
-        self::assertSame('php', $result->extra['service']['language']);
+    public function testErrorObjectInjectedWhenContextExceptionIsThrowable(): void
+    {
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(context: ['exception' => new \RuntimeException('DB connection failed')]),
+        );
+
+        self::assertInstanceOf(EcsError::class, $result->extra['error']);
+
+        $error = $result->extra['error']->toEcs()['error'];
+        self::assertSame('RuntimeException', $error['type']);
+        self::assertSame('DB connection failed', $error['message']);
+        self::assertIsString($error['stack_trace']);
     }
 
-    // --- error.* only on Throwable context exception ---
-
-    public function testErrorFieldsSetWhenContextExceptionIsThrowable(): void
+    public function testErrorObjectInjectedWhenContextExceptionIsError(): void
     {
-        $exception = new \RuntimeException('DB connection failed');
-        $processor = new EcsIdentityProcessor('my-service');
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(context: ['exception' => new \TypeError('Type mismatch')]),
+        );
 
-        $result = $processor($this->createRecord(context: ['exception' => $exception]));
-
-        self::assertArrayHasKey('error', $result->extra);
-        self::assertSame('DB connection failed', $result->extra['error']['message']);
-        // getTraceAsString() starts with "#0 ..." — verify it is a non-empty trace string
-        self::assertStringStartsWith('#0', $result->extra['error']['stack_trace']);
+        self::assertSame('Type mismatch', $result->extra['error']->toEcs()['error']['message']);
     }
 
-    public function testErrorFieldsSetWhenContextExceptionIsError(): void
+    // --- error NOT injected when absent / non-Throwable ---
+
+    public function testNoErrorWhenExceptionAbsent(): void
     {
-        $error = new \TypeError('Type mismatch');
-        $processor = new EcsIdentityProcessor('my-service');
-
-        $result = $processor($this->createRecord(context: ['exception' => $error]));
-
-        self::assertArrayHasKey('error', $result->extra);
-        self::assertSame('Type mismatch', $result->extra['error']['message']);
-    }
-
-    public function testErrorStackTraceIsString(): void
-    {
-        $exception = new \InvalidArgumentException('Bad argument');
-        $processor = new EcsIdentityProcessor('my-service');
-
-        $result = $processor($this->createRecord(context: ['exception' => $exception]));
-
-        self::assertIsString($result->extra['error']['stack_trace']);
-        self::assertNotEmpty($result->extra['error']['stack_trace']);
-    }
-
-    // --- error.* NOT set when exception is absent or non-Throwable ---
-
-    public function testNoErrorFieldWhenExceptionAbsent(): void
-    {
-        $processor = new EcsIdentityProcessor('my-service');
-        $result = $processor($this->createRecord());
+        $result = (new EcsIdentityProcessor('my-service'))($this->createRecord());
 
         self::assertArrayNotHasKey('error', $result->extra);
     }
 
-    public function testNoErrorFieldWhenExceptionIsString(): void
+    public function testNoErrorWhenExceptionIsString(): void
     {
-        // Some MC call sites pass $e->getMessage() (a string) rather than the throwable itself.
-        $processor = new EcsIdentityProcessor('my-service');
-        $result = $processor($this->createRecord(context: ['exception' => 'error message string']));
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(context: ['exception' => 'error message string']),
+        );
 
         self::assertArrayNotHasKey('error', $result->extra);
     }
 
-    public function testNoErrorFieldWhenExceptionIsNull(): void
+    public function testNoErrorWhenExceptionIsNull(): void
     {
-        $processor = new EcsIdentityProcessor('my-service');
-        $result = $processor($this->createRecord(context: ['exception' => null]));
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(context: ['exception' => null]),
+        );
 
         self::assertArrayNotHasKey('error', $result->extra);
     }
 
-    public function testNoErrorFieldWhenExceptionIsInteger(): void
+    public function testNoErrorWhenExceptionIsInteger(): void
     {
-        $processor = new EcsIdentityProcessor('my-service');
-        $result = $processor($this->createRecord(context: ['exception' => 42]));
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(context: ['exception' => 42]),
+        );
 
         self::assertArrayNotHasKey('error', $result->extra);
     }
 
-    // --- processor is non-throwing ---
+    // --- non-throwing ---
 
     public function testProcessorDoesNotThrow(): void
     {
@@ -138,33 +121,28 @@ class EcsIdentityProcessorTest extends TestCase
 
         $this->expectNotToPerformAssertions();
 
-        // Pass various edge-case exception values — must not throw
         $processor($this->createRecord(context: ['exception' => new \stdClass()]));
         $processor($this->createRecord(context: ['exception' => []]));
         $processor($this->createRecord(context: []));
     }
 
-    // --- original record fields unmodified ---
+    // --- original record preserved ---
 
     public function testOriginalMessageUnmodified(): void
     {
-        $processor = new EcsIdentityProcessor('my-service');
-        $record = $this->createRecord('Original message');
-
-        $result = $processor($record);
+        $result = (new EcsIdentityProcessor('my-service'))($this->createRecord('Original message'));
 
         self::assertSame('Original message', $result->message);
     }
 
     public function testExistingExtraFieldsPreserved(): void
     {
-        $processor = new EcsIdentityProcessor('my-service');
-        $record = $this->createRecord(extra: ['pid' => 1234, 'env' => 'staging']);
-
-        $result = $processor($record);
+        $result = (new EcsIdentityProcessor('my-service'))(
+            $this->createRecord(extra: ['pid' => 1234, 'env' => 'staging']),
+        );
 
         self::assertSame(1234, $result->extra['pid']);
         self::assertSame('staging', $result->extra['env']);
-        self::assertArrayHasKey('service', $result->extra);
+        self::assertInstanceOf(Service::class, $result->extra['service']);
     }
 }

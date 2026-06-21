@@ -4,6 +4,15 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Tests;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
+use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Labels;
+use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
+use Herdwatch\MonologEcsFormatter\Ecs\Service;
+use Herdwatch\MonologEcsFormatter\Ecs\Tags;
+use Herdwatch\MonologEcsFormatter\Ecs\Text;
+use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
+use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter;
 use Monolog\Level;
 use Monolog\LogRecord;
@@ -19,18 +28,20 @@ class EcsFieldsFormatterTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $context
-     * @param array<string, mixed> $extra
+     * @param array<array-key, mixed> $context
+     * @param array<array-key, mixed> $extra
      */
     private function createRecord(
         string $message = 'Test message',
         array $context = [],
         array $extra = [],
+        Level $level = Level::Info,
+        string $channel = 'app',
     ): LogRecord {
         return new LogRecord(
             datetime: new \DateTimeImmutable(),
-            channel: 'app',
-            level: Level::Info,
+            channel: $channel,
+            level: $level,
             message: $message,
             context: $context,
             extra: $extra,
@@ -45,363 +56,60 @@ class EcsFieldsFormatterTest extends TestCase
         return json_decode($this->formatter->format($record), true);
     }
 
-    // --- Base structure ---
+    // --- Base skeleton + ECS-logging conformance ---
 
-    public function testBaseFieldsArePresent(): void
+    public function testBaseSkeletonAndConformanceFields(): void
     {
         $output = $this->formatAndDecode($this->createRecord());
 
+        self::assertArrayHasKey('@timestamp', $output);
+        self::assertSame('info', $output['log.level']);
         self::assertSame('Test message', $output['message']);
-        self::assertSame(['level' => 'info', 'logger' => 'app'], $output['log']);
+        self::assertSame('8.11.0', $output['ecs.version']);
+        self::assertSame(['logger' => 'app'], $output['log']);
         self::assertSame('event', $output['event']['kind']);
         self::assertSame('symfony', $output['event']['module']);
         self::assertSame('symfony.logs', $output['event']['dataset']);
+        self::assertSame(Level::Info->value, $output['event']['severity']);
         self::assertArrayHasKey('created', $output['event']);
-        self::assertArrayHasKey('severity', $output['event']);
+    }
+
+    public function testTimestampUsesIso8601WithMicroseconds(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord());
+
+        self::assertMatchesRegularExpression(
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}$/',
+            $output['@timestamp'],
+        );
+    }
+
+    public function testFieldOrderFollowsSpec(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord());
+        $keys = array_keys($output);
+
+        // @timestamp, log.level, message, ecs.version lead the record (ecs-logging spec order).
+        self::assertSame(['@timestamp', 'log.level', 'message', 'ecs.version'], array_slice($keys, 0, 4));
+    }
+
+    public function testMoveModeHasNoLegacyTopLevelKeys(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(level: Level::Warning, channel: 'worker'));
+
+        self::assertArrayNotHasKey('channel', $output);
+        self::assertArrayNotHasKey('level_name', $output);
+        self::assertArrayNotHasKey('level', $output);
+        self::assertArrayNotHasKey('datetime', $output);
+        self::assertSame('warning', $output['log.level']);
     }
 
     public function testOutputEndsWithNewline(): void
     {
-        $raw = $this->formatter->format($this->createRecord());
-
-        self::assertStringEndsWith("\n", $raw);
+        self::assertStringEndsWith("\n", $this->formatter->format($this->createRecord()));
     }
 
-    // --- Extraction of known keys ---
-
-    public function testLabelsExtractedFromContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels' => ['env' => 'prod', 'version' => '1.2'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['env' => 'prod', 'version' => '1.2'], $output['labels']);
-        self::assertArrayNotHasKey('context', $output);
-    }
-
-    public function testLabelsInExtraAreNotExtractedAndRemainInExtra(): void
-    {
-        $record = $this->createRecord(extra: [
-            'labels' => ['source' => 'processor'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        // extra is opaque: labels inside extra are NOT promoted to top-level
-        self::assertArrayNotHasKey('labels', $output);
-        self::assertSame(['source' => 'processor'], $output['extra']['labels']);
-    }
-
-    public function testContextLabelsArePromotedExtraLabelsStayInExtra(): void
-    {
-        $record = $this->createRecord(
-            context: ['labels' => ['env' => 'prod']],
-            extra: ['labels' => ['env' => 'staging', 'source' => 'processor']],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        // Only context labels are promoted; extra labels are NOT merged in
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        // extra is emitted verbatim — its labels stay there
-        self::assertSame(['env' => 'staging', 'source' => 'processor'], $output['extra']['labels']);
-    }
-
-    public function testCoercibleKeysArePromoted(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels' => ['k' => 'v'],
-            'metric' => ['duration_ms' => 100, 'is_retry' => true],
-            'text' => ['note' => 'hello'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        foreach (['labels', 'metric', 'text'] as $key) {
-            self::assertArrayHasKey($key, $output, "Expected top-level key '$key'");
-        }
-        self::assertArrayNotHasKey('context', $output);
-    }
-
-    // --- Remaining keys stay in place ---
-
-    public function testNonExtractableContextKeysStayUnderContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels' => ['env' => 'prod'],
-            'user_id' => 42,
-            'request_path' => '/api/v1/sync',
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayHasKey('labels', $output);
-        self::assertSame(['user_id' => 42, 'request_path' => '/api/v1/sync'], $output['context']);
-    }
-
-    public function testExtraNamespacesAreNotExtractedTheyRemainVerbatim(): void
-    {
-        // extra is opaque: metric inside extra is NOT promoted; the whole extra is emitted as-is
-        $record = $this->createRecord(extra: [
-            'metric' => ['duration_ms' => 50],
-            'pid' => 1234,
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayNotHasKey('metric', $output);
-        self::assertSame(['duration_ms' => 50], $output['extra']['metric']);
-        self::assertSame(1234, $output['extra']['pid']);
-    }
-
-    public function testContextRemainderPreservedExtraEmittedVerbatim(): void
-    {
-        $record = $this->createRecord(
-            context: ['labels' => ['env' => 'prod'], 'user_id' => 42],
-            extra: ['labels' => ['source' => 'proc'], 'pid' => 1234],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        // Context: labels extracted to top-level, user_id stays as remainder
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        self::assertSame(['user_id' => 42], $output['context']);
-        // extra is emitted verbatim — labels inside extra not extracted
-        self::assertSame(['source' => 'proc'], $output['extra']['labels']);
-        self::assertSame(1234, $output['extra']['pid']);
-    }
-
-    public function testNoContextKeyWhenNothingRemainsExtraStillEmittedIfPresent(): void
-    {
-        $record = $this->createRecord(
-            context: ['labels' => ['env' => 'prod']],
-            extra: ['text' => ['note' => 'hello']],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        // Context labels extracted; no context remainder
-        self::assertArrayNotHasKey('context', $output);
-        // extra emitted verbatim — text inside extra is NOT promoted
-        self::assertArrayNotHasKey('text', $output);
-        self::assertSame(['note' => 'hello'], $output['extra']['text']);
-    }
-
-    // --- Coercion: labels ---
-
-    public function testLabelValuesCoercedToString(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels' => ['count' => 42, 'active' => true, 'ratio' => 3.14],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame('42', $output['labels']['count']);
-        self::assertSame('1', $output['labels']['active']);
-        self::assertSame('3.14', $output['labels']['ratio']);
-    }
-
-    public function testLabelsNestedValuesStayInContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels' => [
-                'env' => 'prod',
-                'tags' => ['web', 'api'],
-                'meta' => ['nested' => 'value'],
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        self::assertSame(['web', 'api'], $output['context']['labels']['tags']);
-        self::assertSame(['nested' => 'value'], $output['context']['labels']['meta']);
-    }
-
-    // --- Coercion: metric ---
-
-    public function testMetricLongSuffixesCastToInt(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'retry_count' => '3',
-                'items_count' => '7',
-                'batch_count' => 7.9,
-                'events_total' => '100',
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(3, $output['metric']['retry_count']);
-        self::assertSame(7, $output['metric']['items_count']);
-        self::assertSame(100, $output['metric']['events_total']);
-
-        // 7.9 is not an integer — _count requires whole numbers, so it stays in context
-        self::assertArrayNotHasKey('batch_count', $output['metric']);
-        self::assertSame(7.9, $output['context']['metric']['batch_count']);
-    }
-
-    public function testMetricNumericValuesDefaultToDouble(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'duration_ms' => '150.5',
-                'latency_ms' => '0.85',
-                'success_rate' => '12.5',
-                'payload_bytes' => 2048,
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(150.5, $output['metric']['duration_ms']);
-        self::assertSame(0.85, $output['metric']['latency_ms']);
-        self::assertSame(12.5, $output['metric']['success_rate']);
-
-        // _bytes is not a long suffix, so it defaults to double
-        self::assertSame(2048.0, $output['metric']['payload_bytes']);
-    }
-
-    public function testMetricUnrecognizedSuffixDefaultsToDouble(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => ['custom_value' => '42'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(42.0, $output['metric']['custom_value']);
-        self::assertArrayNotHasKey('context', $output);
-    }
-
-    public function testMetricNonNumericStringsStayInContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'duration_ms' => 'not-a-number',
-                'items_count' => 'abc',
-                'success_rate' => 'N/A',
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayNotHasKey('metric', $output);
-        self::assertSame('not-a-number', $output['context']['metric']['duration_ms']);
-        self::assertSame('abc', $output['context']['metric']['items_count']);
-        self::assertSame('N/A', $output['context']['metric']['success_rate']);
-    }
-
-    public function testMetricNullValuesStayInContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => ['duration_ms' => null, 'items_count' => 5],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(1, $output['metric']);
-        self::assertSame(5, $output['metric']['items_count']);
-
-        self::assertArrayNotHasKey('duration_ms', $output['metric']);
-        self::assertNull($output['context']['metric']['duration_ms']);
-    }
-
-    // --- Coercion: text ---
-
-    public function testTextValuesCoercedToString(): void
-    {
-        $record = $this->createRecord(context: [
-            'text' => ['code' => 404, 'active' => true],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame('404', $output['text']['code']);
-        self::assertSame('1', $output['text']['active']);
-    }
-
-    public function testTextNestedValuesStayInContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'text' => [
-                'summary' => 'All good',
-                'payload' => ['key' => 'value'],
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['summary' => 'All good'], $output['text']);
-        self::assertSame(['key' => 'value'], $output['context']['text']['payload']);
-    }
-
-    public function testMetricNestedValuesStayInContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'duration_ms' => 150,
-                'breakdown' => ['read_ms' => 50, 'write_ms' => 100],
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(1, $output['metric']);
-        self::assertSame(150.0, $output['metric']['duration_ms']);
-
-        self::assertSame(['read_ms' => 50, 'write_ms' => 100], $output['context']['metric']['breakdown']);
-    }
-
-    // --- formatBatch ---
-
-    public function testFormatBatchConcatenatesRecords(): void
-    {
-        $records = [
-            $this->createRecord('First'),
-            $this->createRecord('Second'),
-        ];
-
-        $raw = $this->formatter->formatBatch($records);
-        $lines = array_filter(explode("\n", $raw));
-
-        self::assertCount(2, $lines);
-
-        $first = json_decode($lines[0], true);
-        $second = json_decode($lines[1], true);
-
-        self::assertSame('First', $first['message']);
-        self::assertSame('Second', $second['message']);
-    }
-
-    public function testFormatBatchWithNewlinesInMessage(): void
-    {
-        $records = [
-            $this->createRecord("Line one\nLine two\nLine three"),
-            $this->createRecord('Simple message'),
-        ];
-
-        $raw = $this->formatter->formatBatch($records);
-
-        // Each record must be valid JSON on a single line (NDJSON)
-        $lines = array_filter(explode("\n", $raw));
-
-        self::assertCount(2, $lines);
-
-        $first = json_decode($lines[0], true);
-        $second = json_decode($lines[1], true);
-
-        self::assertSame("Line one\nLine two\nLine three", $first['message']);
-        self::assertSame('Simple message', $second['message']);
-    }
-
-    // --- Empty context and extra ---
-
-    public function testEmptyContextAndExtraProduceCleanOutput(): void
+    public function testEmptyRecordProducesNoContextOrExtra(): void
     {
         $output = $this->formatAndDecode($this->createRecord());
 
@@ -411,326 +119,255 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayNotHasKey('metric', $output);
     }
 
-    // --- Key hygiene ---
+    // --- Bag detection is by type, not key ---
 
-    public function testKeyFormatValidation(): void
+    public function testLabelsBagPromotedWhenPassedPositionally(): void
     {
-        $record = $this->createRecord(context: [
-            'labels' => [
-                'env' => 'prod',
-                'User_Id' => 'x',
-                '123_code' => 'y',
-                'a_b_c_d' => 'z',
-            ],
-            'text' => [
-                'note' => 'hello',
-                'SHOUT' => 'world',
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        self::assertSame(['note' => 'hello'], $output['text']);
-
-        self::assertSame('x', $output['context']['labels']['User_Id']);
-        self::assertSame('y', $output['context']['labels']['123_code']);
-        self::assertSame('z', $output['context']['labels']['a_b_c_d']);
-        self::assertSame('world', $output['context']['text']['SHOUT']);
-    }
-
-    public function testMetricKeyFormatRejectsInvalidKeys(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'duration_ms' => 100.0,
-                'InvalidKey_ms' => 50.0,
-                '123_count' => 30,
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(1, $output['metric']);
-        self::assertSame(100.0, $output['metric']['duration_ms']);
-
-        self::assertSame(50.0, $output['context']['metric']['InvalidKey_ms']);
-        self::assertSame(30, $output['context']['metric']['123_count']);
-    }
-
-    public function testMaxKeysPerNamespaceEnforced(): void
-    {
-        $labels = [];
-        for ($i = 1; $i <= 10; $i++) {
-            $labels["key$i"] = "val$i";
-        }
-
-        $text = [];
-        for ($i = 1; $i <= 4; $i++) {
-            $text["note$i"] = "text$i";
-        }
-
-        $record = $this->createRecord(context: [
-            'labels' => $labels,
-            'text' => $text,
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(8, $output['labels']);
-        self::assertCount(2, $output['text']);
-
-        self::assertCount(2, $output['context']['labels']);
-        self::assertCount(2, $output['context']['text']);
-    }
-
-    // --- Dot-notation unflattening ---
-
-    public function testDotNotationLabelsUnflattenedFromContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels.env' => 'prod',
-            'labels.version' => '1.2',
-        ]);
-
-        $output = $this->formatAndDecode($record);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Labels::create()->add('env', 'prod')->add('version', '1.2'),
+        ]));
 
         self::assertSame(['env' => 'prod', 'version' => '1.2'], $output['labels']);
         self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testDotNotationMetricUnflattenedFromContext(): void
+    public function testBagDetectedUnderAnyArrayKey(): void
     {
-        $record = $this->createRecord(context: [
-            'metric.duration_ms' => 150.5,
-            'metric.items_count' => 42,
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'whatever' => Labels::create()->add('env', 'prod'),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(150.5, $output['metric']['duration_ms']);
-        self::assertSame(42, $output['metric']['items_count']);
-
+        self::assertSame(['env' => 'prod'], $output['labels']);
         self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testDotNotationMergesWithExistingNestedKey(): void
+    public function testMultipleBagsOfSameNamespaceMerge(): void
     {
-        $record = $this->createRecord(context: [
-            'labels' => ['env' => 'prod'],
-            'labels.version' => '1.2',
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Labels::create()->add('env', 'prod'),
+            Labels::create()->add('tenant', 'acme'),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame('prod', $output['labels']['env']);
-        self::assertSame('1.2', $output['labels']['version']);
+        self::assertSame(['env' => 'prod', 'tenant' => 'acme'], $output['labels']);
     }
 
-    public function testDotNotationIgnoresNonExtractablePrefixes(): void
+    // --- Metric typing ---
+
+    public function testMetricTypesArePreserved(): void
     {
-        $record = $this->createRecord(context: [
-            'custom.key' => 'value',
-            'labels.env' => 'prod',
-        ]);
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Metrics::create()
+                ->count('retry_count', 3)
+                ->total('events_total', 500)
+                ->gauge('duration_ms', 12.5)
+                ->flag('is_cached', true),
+        ]));
 
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        self::assertSame('value', $output['context']['custom.key']);
-    }
-
-    public function testDotNotationIgnoresExtraDots(): void
-    {
-        $record = $this->createRecord(context: [
-            'labels.nested.key' => 'value',
-            'metric.deep.nested.key' => 42,
-            'labels.env' => 'prod',
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['env' => 'prod'], $output['labels']);
-        self::assertSame('value', $output['context']['labels.nested.key']);
-        self::assertSame(42, $output['context']['metric.deep.nested.key']);
-    }
-
-    public function testDotNotationInContextIsUnflattenedExtraDotKeysAreVerbatim(): void
-    {
-        // Context dot-notation is unflattened and extracted to top-level.
-        // extra is opaque: dot-notation keys in extra are NOT unflattened and NOT extracted.
-        $record = $this->createRecord(
-            context: ['labels.env' => 'prod'],
-            extra: ['labels.env' => 'staging', 'labels.source' => 'processor'],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        // Context dot-key unflattened and promoted
-        self::assertSame('prod', $output['labels']['env']);
-        self::assertArrayNotHasKey('source', $output['labels'] ?? []);
-
-        // extra emitted verbatim — dot keys stay flat, not unflattened, not promoted
-        self::assertSame('staging', $output['extra']['labels.env']);
-        self::assertSame('processor', $output['extra']['labels.source']);
-    }
-
-    public function testAllMetricTypesAreAccepted(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'duration_ms' => 100.5,
-                'latency_ms' => 50.0,
-                'items_count' => 42,
-                'retry_count' => 3,
-                'events_total' => 500,
-                'success_rate' => 0.95,
-                'is_retry' => true,
-                'is_cached' => false,
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(8, $output['metric']);
-
-        self::assertSame(100.5, $output['metric']['duration_ms']);
-        self::assertSame(50.0, $output['metric']['latency_ms']);
-        self::assertSame(42, $output['metric']['items_count']);
         self::assertSame(3, $output['metric']['retry_count']);
         self::assertSame(500, $output['metric']['events_total']);
-        self::assertSame(0.95, $output['metric']['success_rate']);
-        self::assertTrue($output['metric']['is_retry']);
-        self::assertFalse($output['metric']['is_cached']);
+        self::assertSame(12.5, $output['metric']['duration_ms']);
+        self::assertTrue($output['metric']['is_cached']);
+    }
 
+    // --- Text ---
+
+    public function testTextBagPromoted(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Text::create()->add('reason', 'Missing field'),
+        ]));
+
+        self::assertSame(['reason' => 'Missing field'], $output['text']);
+    }
+
+    // --- Tags ---
+
+    public function testTagsBagPromotedAndDeduplicated(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Tags::of('web', 'api', 'web'),
+        ]));
+
+        self::assertSame(['web', 'api'], $output['tags']);
         self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testMetricBooleanPrefixCastToBool(): void
-    {
-        $record = $this->createRecord(context: [
-            'metric' => [
-                'is_retry' => 1,
-                'is_cached' => '',
-                'is_active' => 'yes',
-            ],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertCount(3, $output['metric']);
-
-        self::assertTrue($output['metric']['is_retry']);
-        self::assertFalse($output['metric']['is_cached']);
-        self::assertTrue($output['metric']['is_active']);
-    }
-
-    // --- Tags (ECS base field) ---
-
-    public function testTagsExtractedFromContext(): void
-    {
-        $record = $this->createRecord(context: [
-            'tags' => ['web', 'production'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['web', 'production'], $output['tags']);
-        self::assertArrayNotHasKey('context', $output);
-    }
-
-    public function testTagsInExtraAreNotExtractedAndRemainInExtra(): void
-    {
-        // extra is opaque: tags inside extra are NOT promoted to top-level
-        $record = $this->createRecord(extra: [
-            'tags' => ['background'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayNotHasKey('tags', $output);
-        self::assertSame(['background'], $output['extra']['tags']);
-    }
-
-    public function testTagsExtractedFromContextOnlyNotMergedFromExtra(): void
-    {
-        $record = $this->createRecord(
-            context: ['tags' => ['web', 'production']],
-            extra: ['tags' => ['web', 'internal']],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        // Only context tags are promoted; extra tags are NOT merged in
-        self::assertSame(['web', 'production'], $output['tags']);
-        // extra tags stay verbatim in extra
-        self::assertSame(['web', 'internal'], $output['extra']['tags']);
-    }
-
-    public function testTagsNonStringValuesStayInRemainder(): void
-    {
-        $record = $this->createRecord(context: [
-            'tags' => ['valid', 42, '', ['nested'], null, 'also_valid'],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertSame(['valid', 'also_valid'], $output['tags']);
-        self::assertSame([42, '', ['nested'], null], $output['context']['tags']);
-    }
-
-    public function testTagsMaxEnforced(): void
+    public function testTagsOverCapPreservedInContext(): void
     {
         $tags = [];
         for ($i = 1; $i <= 10; $i++) {
             $tags[] = "tag$i";
         }
 
-        $record = $this->createRecord(context: ['tags' => $tags]);
-
-        $output = $this->formatAndDecode($record);
+        $output = $this->formatAndDecode($this->createRecord(context: [Tags::of(...$tags)]));
 
         self::assertCount(8, $output['tags']);
-        self::assertCount(2, $output['context']['tags']);
+        self::assertSame(['tag9', 'tag10'], $output['context']['tags']);
     }
 
-    public function testTagsScalarValueWrappedInRemainder(): void
+    // --- Plain context flows through, never promoted ---
+
+    public function testPlainContextStaysUnderContext(): void
     {
-        $record = $this->createRecord(context: [
-            'tags' => 'not-an-array',
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Labels::create()->add('env', 'prod'),
+            'user_id' => 42,
+            'request_path' => '/api/v1/sync',
+        ]));
+
+        self::assertSame(['env' => 'prod'], $output['labels']);
+        self::assertSame(['user_id' => 42, 'request_path' => '/api/v1/sync'], $output['context']);
+    }
+
+    // --- Never-drop: invalid key / over-cap demoted to dotted context keys (move mode) ---
+
+    public function testInvalidKeyDemotedToContextWithDottedKey(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            Labels::create()->add('env', 'prod')->add('Bad Key', 'kept'),
+        ]));
+
+        self::assertSame(['env' => 'prod'], $output['labels']);
+        self::assertSame('kept', $output['context']['labels.Bad Key']);
+    }
+
+    public function testOverCapDemotedToContextWithDottedKeys(): void
+    {
+        $labels = Labels::create();
+        for ($i = 1; $i <= 10; $i++) {
+            $labels->add("key$i", "val$i");
+        }
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$labels]));
+
+        self::assertCount(8, $output['labels']);
+        self::assertSame('val9', $output['context']['labels.key9']);
+        self::assertSame('val10', $output['context']['labels.key10']);
+    }
+
+    // --- Identity types ---
+
+    public function testServiceUserTracingPromoted(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new Service('billing', version: '1.4.0', environment: 'prod'),
+            new User(id: 42, email: 'farmer@example.com'),
+            new Tracing('trace-abc', 'txn-xyz'),
+        ]));
+
+        self::assertSame(['name' => 'billing', 'language' => 'php', 'version' => '1.4.0', 'environment' => 'prod'], $output['service']);
+        self::assertSame(['id' => 42, 'email' => 'farmer@example.com'], $output['user']);
+        self::assertSame(['id' => 'trace-abc'], $output['trace']);
+        self::assertSame(['id' => 'txn-xyz'], $output['transaction']);
+    }
+
+    public function testEcsErrorPromotedWithTypeAndCode(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new EcsError(new \RuntimeException('boom', 7)),
+        ]));
+
+        self::assertSame('RuntimeException', $output['error']['type']);
+        self::assertSame('boom', $output['error']['message']);
+        self::assertSame('7', $output['error']['code']);
+        self::assertIsString($output['error']['stack_trace']);
+    }
+
+    // --- extra ---
+
+    public function testExtraEmittedVerbatimAndNotScannedForArrays(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(extra: [
+            'metric' => ['duration_ms' => 50],
+            'pid' => 1234,
+        ]));
+
+        self::assertArrayNotHasKey('metric', $output);
+        self::assertSame(['duration_ms' => 50], $output['extra']['metric']);
+        self::assertSame(1234, $output['extra']['pid']);
+    }
+
+    public function testEcsFieldInExtraIsPromoted(): void
+    {
+        // Mirrors what EcsIdentityProcessor does — inject objects into extra.
+        $output = $this->formatAndDecode($this->createRecord(extra: [
+            'service' => new Service('worker-svc'),
+        ]));
+
+        self::assertSame('worker-svc', $output['service']['name']);
+        self::assertArrayNotHasKey('extra', $output);
+    }
+
+    public function testContextWinsOverExtraForSameNamespace(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(
+            context: [new Service('context-svc')],
+            extra: ['service' => new Service('extra-svc')],
+        ));
+
+        self::assertSame('context-svc', $output['service']['name']);
+    }
+
+    // --- Project-specific EcsField is auto-detected ---
+
+    public function testCustomEcsFieldIsPromotedAutomatically(): void
+    {
+        $farm = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return ['farm' => ['herd_id' => 1234, 'region' => 'munster']];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(context: [$farm]));
+
+        self::assertSame(['herd_id' => 1234, 'region' => 'munster'], $output['farm']);
+    }
+
+    public function testBaseSkeletonIsProtectedFromFragments(): void
+    {
+        $malicious = new class () implements EcsField {
+            public function toEcs(): array
+            {
+                return [
+                    '@timestamp' => 'HACK',
+                    'message' => 'HACK',
+                    'log.level' => 'HACK',
+                    'ecs.version' => 'HACK',
+                    'log' => ['logger' => 'HACK', 'origin' => ['file' => ['name' => 'x.php']]],
+                    'event' => ['kind' => 'HACK', 'action' => 'custom'],
+                ];
+            }
+        };
+
+        $output = $this->formatAndDecode($this->createRecord(message: 'real', context: [$malicious]));
+
+        // Base scalars cannot be overwritten.
+        self::assertNotSame('HACK', $output['@timestamp']);
+        self::assertSame('real', $output['message']);
+        self::assertSame('info', $output['log.level']);
+        self::assertSame('8.11.0', $output['ecs.version']);
+
+        // log/event: base values win on conflict, but new sub-keys are allowed.
+        self::assertSame('app', $output['log']['logger']);
+        self::assertSame('x.php', $output['log']['origin']['file']['name']);
+        self::assertSame('event', $output['event']['kind']);
+        self::assertSame('custom', $output['event']['action']);
+    }
+
+    // --- Batch ---
+
+    public function testFormatBatchProducesNdjson(): void
+    {
+        $raw = $this->formatter->formatBatch([
+            $this->createRecord('First'),
+            $this->createRecord("Second\nwith newline"),
         ]);
 
-        $output = $this->formatAndDecode($record);
+        $lines = array_filter(explode("\n", $raw));
+        self::assertCount(2, $lines);
 
-        self::assertArrayNotHasKey('tags', $output);
-        self::assertSame(['not-an-array'], $output['context']['tags']);
-    }
-
-    public function testEmptyTagsArrayOmitted(): void
-    {
-        $record = $this->createRecord(context: [
-            'tags' => [],
-        ]);
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayNotHasKey('tags', $output);
-        self::assertArrayNotHasKey('context', $output);
-    }
-
-    // --- Dot-notation: flags ---
-
-    public function testDotNotationFlagsNoLongerExtracted(): void
-    {
-        $record = $this->createRecord(
-            context: ['flags.is_retry' => true],
-            extra: ['flags.debug' => false],
-        );
-
-        $output = $this->formatAndDecode($record);
-
-        self::assertArrayNotHasKey('flags', $output);
-        self::assertTrue($output['context']['flags.is_retry']);
-        self::assertFalse($output['extra']['flags.debug']);
+        self::assertSame('First', json_decode($lines[0], true)['message']);
+        self::assertSame("Second\nwith newline", json_decode($lines[1], true)['message']);
     }
 }

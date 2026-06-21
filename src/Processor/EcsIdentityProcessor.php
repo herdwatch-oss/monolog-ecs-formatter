@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Processor;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
+use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Monolog\LogRecord;
 use Monolog\Processor\ProcessorInterface;
 
 /**
- * Adds ECS identity fields to every log record:
- *   - extra.service.name  = the configured service name
- *   - extra.service.language = 'php'
- *   - extra.error.message     = throwable message  (only when context['exception'] is a \Throwable)
- *   - extra.error.stack_trace = throwable trace    (only when context['exception'] is a \Throwable)
+ * Attaches ECS identity objects to every record so they ride the single EcsField path:
+ *   - extra.service = new Service($serviceName)            — always
+ *   - extra.error   = new EcsError($throwable)             — only when context['exception'] is a \Throwable
  *
- * The formatter will subsequently promote the service and error objects to top-level ECS fields.
+ * The formatter then promotes both to top-level ECS fields (service.*, error.*).
  * This processor is non-throwing: a non-Throwable exception value is silently ignored.
  */
 final class EcsIdentityProcessor implements ProcessorInterface
@@ -29,18 +29,12 @@ final class EcsIdentityProcessor implements ProcessorInterface
     {
         $extra = $record->extra;
 
-        $extra['service'] = [
-            'name' => $this->serviceName,
-            'language' => $this->language,
-        ];
+        $extra['service'] = new Service($this->serviceName, language: $this->language);
 
         $exception = $record->context['exception'] ?? null;
 
         if ($exception instanceof \Throwable) {
-            $extra['error'] = [
-                'message' => $exception->getMessage(),
-                'stack_trace' => $exception->getTraceAsString(),
-            ];
+            $extra['error'] = new EcsError($exception);
         }
 
         return $record->with(extra: $extra);

@@ -1,6 +1,6 @@
 {
     "name": "herdwatch-oss/monolog-ecs-formatter",
-    "description": "Monolog formatter and Symfony bundle that promotes structured log context (labels, metric, text, tags, service, error) to top-level ECS-aligned JSON fields for clean Elasticsearch mapping, with copy/move modes for non-destructive migration.",
+    "description": "Monolog formatter and Symfony bundle that promotes typed ECS value objects (metrics, labels, text, tags, service, user, tracing, error) to top-level ECS-aligned JSON fields for clean Elasticsearch mapping, with copy/move modes for non-destructive migration.",
     "type": "symfony-bundle",
     "license": "MIT",
     "keywords": ["monolog", "ecs", "elasticsearch", "logging", "symfony", "formatter"],
@@ -33,7 +33,7 @@
     },
     "scripts": {
         "test": "phpunit",
-        "phpstan": "phpstan analyse",
+        "phpstan": "phpstan analyse --memory-limit=512M",
         "cs-check": "php-cs-fixer fix --dry-run --diff",
         "cs-fix": "php-cs-fixer fix"
     },
