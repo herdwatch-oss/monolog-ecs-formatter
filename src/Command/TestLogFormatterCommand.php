@@ -58,7 +58,7 @@ class TestLogFormatterCommand extends Command
 
         // 6. Mixed: labels + metrics + tags + non-extractable context
         $this->logger->notice('Sync batch completed.', [
-            'labels' => ['profile_id' => 'P-' . random_int(100, 999), 'sequence' => 'animal'],
+            'labels' => ['profile_id' => 'P-' . random_int(100, 999), 'sequence' => 'nightly'],
             'metric' => ['duration_ms' => random_int(1000, 10000), 'items_count' => random_int(10, 500)],
             'tags' => ['sync', 'batch'],
             'request_id' => 'req-' . bin2hex(random_bytes(4)),
@@ -98,7 +98,7 @@ class TestLogFormatterCommand extends Command
             ],
         ]);
 
-        // 10. Extra via processor (flat context, no extractable keys)
+        // 10. Flat context with no extractable namespaces (kept as-is under context)
         $this->logger->notice('Plain message with no structured fields.', [
             'user_id' => 42,
             'action' => 'export',
