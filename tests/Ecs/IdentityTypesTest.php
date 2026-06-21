@@ -60,6 +60,13 @@ class IdentityTypesTest extends TestCase
         self::assertSame(['trace' => ['id' => 'trace-1']], (new Tracing('trace-1'))->toEcs());
     }
 
+    public function testEcsErrorStackTraceIncludesPreviousChain(): void
+    {
+        $error = (new EcsError(new \RuntimeException('wrapper', 0, new \LogicException('root cause'))))->toEcs();
+
+        self::assertStringContainsString('root cause', $error['error']['stack_trace']);
+    }
+
     public function testEcsErrorOmitsZeroCode(): void
     {
         $error = (new EcsError(new \RuntimeException('no code')))->toEcs();

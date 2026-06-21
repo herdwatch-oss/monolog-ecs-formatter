@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Tests;
 
+use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
+use Herdwatch\MonologEcsFormatter\Ecs\Process;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
@@ -468,6 +472,35 @@ class EcsFieldsFormatterTest extends TestCase
 
         self::assertStringEndsNotWith("\n", $formatter->format($this->createRecord()));
         self::assertStringEndsNotWith("\n", $formatter->formatBatch([$this->createRecord(), $this->createRecord()]));
+    }
+
+    // --- Standard ECS context types ---
+
+    public function testStandardEcsContextTypesPromotedToTopLevel(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new Http(statusCode: 503, method: 'get'),
+            new Process(pid: 99, commandLine: 'bin/console app:run'),
+            new Client(ip: '203.0.113.7'),
+        ]));
+
+        self::assertSame(503, $output['http']['response']['status_code']);
+        self::assertSame('GET', $output['http']['request']['method']);
+        self::assertSame(99, $output['process']['pid']);
+        self::assertSame('203.0.113.7', $output['client']['ip']);
+        self::assertArrayNotHasKey('context', $output);
+    }
+
+    public function testEventFragmentMergesWithBaseEventAndFormatsStart(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new Event(action: 'farm.sync', start: new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00')),
+        ]));
+
+        self::assertSame('farm.sync', $output['event']['action']);
+        self::assertSame('event', $output['event']['kind']);            // base preserved
+        self::assertSame('symfony.logs', $output['event']['dataset']);  // base preserved
+        self::assertSame('2026-06-21T11:59:59.250000+00:00', $output['event']['start']);
     }
 
     // --- Batch ---

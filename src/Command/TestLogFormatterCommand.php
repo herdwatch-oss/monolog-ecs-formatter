@@ -4,15 +4,21 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Command;
 
+use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\Host;
+use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
+use Herdwatch\MonologEcsFormatter\Ecs\Process;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
 use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
 use Herdwatch\MonologEcsFormatter\Ecs\User;
+use Herdwatch\MonologEcsFormatter\Ecs\UserAgent;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -67,6 +73,16 @@ class TestLogFormatterCommand extends Command
             new Service('demo-service', version: '1.4.0', environment: 'staging'),
             new User(id: random_int(1, 9999), email: 'farmer@example.com'),
             new Tracing(bin2hex(random_bytes(8)), bin2hex(random_bytes(4))),
+        ]);
+
+        // 5b. Standard ECS runtime / request context.
+        $this->logger->info('Inbound API request.', [
+            new Http(statusCode: 200, method: 'POST'),
+            new Process(pid: getmypid() ?: null, commandLine: 'bin/console monolog-ecs:test'),
+            new Client(ip: '203.0.113.' . random_int(1, 254)),
+            new UserAgent(device: 'iPhone', version: '4.2.1'),
+            new Host(name: gethostname() ?: 'localhost'),
+            new Event(action: 'api.request', start: new \DateTimeImmutable()),
         ]);
 
         // 6. Exceptions via EcsError (captures error.type, message, code, stack_trace).

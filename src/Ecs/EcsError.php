@@ -33,7 +33,9 @@ final class EcsError implements EcsField
             $error['code'] = (string) $code;
         }
 
-        $error['stack_trace'] = $this->throwable->getTraceAsString();
+        // Full string form captures the throw-site file:line and the previous-exception chain,
+        // both of which a bare getTraceAsString() omits.
+        $error['stack_trace'] = (string) $this->throwable;
 
         return ['error' => $error];
     }

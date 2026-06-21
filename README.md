@@ -119,10 +119,31 @@ Tags::fromArray($list);
 | `Service` | `service.name`, `service.language` (default `php`), and optional `version`, `environment`, `node.name` |
 | `User` | `user.id`, `name`, `email`, `domain`, `full_name`, `hash` (null fields omitted) |
 | `Tracing` | `trace.id`, `transaction.id` — for logs ↔ APM correlation |
-| `EcsError` | `error.type` (exception class), `message`, `code`, `stack_trace` |
+| `EcsError` | `error.type` (class), `message`, `stack_trace` (includes throw-site file:line + previous-exception chain); `error.code` only when non-zero |
 
 ```php
 $log->error('Sync failed', [new EcsError($exception)]);
+```
+
+## Standard ECS context fields
+
+Bundled value objects for common runtime / request / host fields, so each service doesn't hand-roll them. All take named constructor arguments and omit null fields.
+
+| Object | ECS fields |
+|--------|-----------|
+| `Http` | `http.response.status_code`, `http.request.method` |
+| `Process` | `process.pid`, `process.command_line`, `process.name` |
+| `Client` | `client.ip`, `client.port` |
+| `UserAgent` | `user_agent.original`, `user_agent.version`, `user_agent.device.name` |
+| `Host` | `host.name`, `host.ip` |
+| `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
+
+```php
+$log->info('Inbound request', [
+    new Http(statusCode: 200, method: 'POST'),
+    new Client(ip: $request->getClientIp()),
+    new Event(action: 'api.request', start: $startedAt),
+]);
 ```
 
 ## Project-specific fields
