@@ -53,6 +53,9 @@ Use this for a non-destructive transition while existing dashboards/queries stil
 
 ## Promoted namespaces
 
+These namespaces are read from the log **context** only and promoted to ECS top-level fields.
+`extra` is treated as opaque processor data and is re-emitted verbatim — its contents are never scanned for extractable namespaces.
+
 | Key | Type | Notes |
 |-----|------|-------|
 | `labels` | `string` values | filtering dimensions; max 8 keys |
@@ -60,7 +63,7 @@ Use this for a non-destructive transition while existing dashboards/queries stil
 | `text` | `string` values | long text; max 2 keys |
 | `tags` | `string[]` | flat unique keyword array; max 8 |
 
-Keys must match `/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/`. Non-conforming keys fall back to `context`/`extra` (never dropped). Dot-notation (`labels.env`) is unflattened automatically.
+Keys must match `/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/`. Non-conforming keys fall back to `context` remainder (never dropped). Dot-notation (`labels.env`) in context is unflattened automatically; dot-notation keys in `extra` are left as-is.
 
 ## Identity processor (`service.*` / `error.*`)
 
@@ -70,7 +73,7 @@ When `service_name` is configured, `EcsIdentityProcessor` is registered as a glo
 - `service.language` = `php`
 - `error.message` + `error.stack_trace` — only when `context['exception']` is a `\Throwable`
 
-The formatter promotes `service` and `error` to top-level ECS fields in both modes.
+The processor writes `service` and `error` into `extra`. The formatter promotes both fields to top-level ECS fields in both move and copy modes, regardless of whether they originate from `extra` or `context`.
 
 ## Wiring formatters in `monolog.yaml`
 

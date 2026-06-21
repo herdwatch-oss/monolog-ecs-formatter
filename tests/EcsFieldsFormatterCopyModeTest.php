@@ -168,8 +168,9 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame(['note' => 'Sync completed successfully'], $output['context']['text']);
     }
 
-    public function testExtraRemaindersRetainedInCopyMode(): void
+    public function testExtraIsEmittedVerbatimNotExtractedInCopyMode(): void
     {
+        // extra is opaque in copy mode too: metric inside extra is NOT promoted; extra is emitted as-is
         $record = $this->createRecord(extra: [
             'metric' => ['items_count' => 5],
             'pid' => 1234,
@@ -177,11 +178,10 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
-        // Promoted to top-level
-        self::assertArrayHasKey('metric', $output);
-        self::assertSame(5, $output['metric']['items_count']);
+        // Metric from extra must NOT appear at top-level
+        self::assertArrayNotHasKey('metric', $output);
 
-        // Original extra retained in full — non-extractable key AND the original metric entry
+        // extra is emitted verbatim in copy mode
         self::assertArrayHasKey('extra', $output);
         self::assertSame(1234, $output['extra']['pid']);
         self::assertSame(['items_count' => 5], $output['extra']['metric']);

@@ -81,7 +81,7 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testLabelsExtractedFromExtra(): void
+    public function testLabelsInExtraAreNotExtractedAndRemainInExtra(): void
     {
         $record = $this->createRecord(extra: [
             'labels' => ['source' => 'processor'],
@@ -89,11 +89,12 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
-        self::assertSame(['source' => 'processor'], $output['labels']);
-        self::assertArrayNotHasKey('extra', $output);
+        // extra is opaque: labels inside extra are NOT promoted to top-level
+        self::assertArrayNotHasKey('labels', $output);
+        self::assertSame(['source' => 'processor'], $output['extra']['labels']);
     }
 
-    public function testContextLabelsOverrideExtraLabels(): void
+    public function testContextLabelsArePromotedExtraLabelsStayInExtra(): void
     {
         $record = $this->createRecord(
             context: ['labels' => ['env' => 'prod']],
@@ -102,9 +103,10 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
-        // context wins for overlapping key 'env', extra's 'source' is kept via array_merge
-        self::assertSame('prod', $output['labels']['env']);
-        self::assertSame('processor', $output['labels']['source']);
+        // Only context labels are promoted; extra labels are NOT merged in
+        self::assertSame(['env' => 'prod'], $output['labels']);
+        // extra is emitted verbatim — its labels stay there
+        self::assertSame(['env' => 'staging', 'source' => 'processor'], $output['extra']['labels']);
     }
 
     public function testCoercibleKeysArePromoted(): void
@@ -139,8 +141,9 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertSame(['user_id' => 42, 'request_path' => '/api/v1/sync'], $output['context']);
     }
 
-    public function testNonExtractableExtraKeysStayUnderExtra(): void
+    public function testExtraNamespacesAreNotExtractedTheyRemainVerbatim(): void
     {
+        // extra is opaque: metric inside extra is NOT promoted; the whole extra is emitted as-is
         $record = $this->createRecord(extra: [
             'metric' => ['duration_ms' => 50],
             'pid' => 1234,
@@ -148,11 +151,12 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
-        self::assertArrayHasKey('metric', $output);
-        self::assertSame(['pid' => 1234], $output['extra']);
+        self::assertArrayNotHasKey('metric', $output);
+        self::assertSame(['duration_ms' => 50], $output['extra']['metric']);
+        self::assertSame(1234, $output['extra']['pid']);
     }
 
-    public function testBothContextAndExtraRemaindersPreserved(): void
+    public function testContextRemainderPreservedExtraEmittedVerbatim(): void
     {
         $record = $this->createRecord(
             context: ['labels' => ['env' => 'prod'], 'user_id' => 42],
@@ -161,11 +165,15 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
+        // Context: labels extracted to top-level, user_id stays as remainder
+        self::assertSame(['env' => 'prod'], $output['labels']);
         self::assertSame(['user_id' => 42], $output['context']);
-        self::assertSame(['pid' => 1234], $output['extra']);
+        // extra is emitted verbatim — labels inside extra not extracted
+        self::assertSame(['source' => 'proc'], $output['extra']['labels']);
+        self::assertSame(1234, $output['extra']['pid']);
     }
 
-    public function testNoContextOrExtraKeyWhenNothingRemains(): void
+    public function testNoContextKeyWhenNothingRemainsExtraStillEmittedIfPresent(): void
     {
         $record = $this->createRecord(
             context: ['labels' => ['env' => 'prod']],
@@ -174,8 +182,11 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
+        // Context labels extracted; no context remainder
         self::assertArrayNotHasKey('context', $output);
-        self::assertArrayNotHasKey('extra', $output);
+        // extra emitted verbatim — text inside extra is NOT promoted
+        self::assertArrayNotHasKey('text', $output);
+        self::assertSame(['note' => 'hello'], $output['extra']['text']);
     }
 
     // --- Coercion: labels ---
@@ -544,8 +555,10 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertSame(42, $output['context']['metric.deep.nested.key']);
     }
 
-    public function testDotNotationContextWinsOverExtra(): void
+    public function testDotNotationInContextIsUnflattenedExtraDotKeysAreVerbatim(): void
     {
+        // Context dot-notation is unflattened and extracted to top-level.
+        // extra is opaque: dot-notation keys in extra are NOT unflattened and NOT extracted.
         $record = $this->createRecord(
             context: ['labels.env' => 'prod'],
             extra: ['labels.env' => 'staging', 'labels.source' => 'processor'],
@@ -553,8 +566,13 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
+        // Context dot-key unflattened and promoted
         self::assertSame('prod', $output['labels']['env']);
-        self::assertSame('processor', $output['labels']['source']);
+        self::assertArrayNotHasKey('source', $output['labels'] ?? []);
+
+        // extra emitted verbatim — dot keys stay flat, not unflattened, not promoted
+        self::assertSame('staging', $output['extra']['labels.env']);
+        self::assertSame('processor', $output['extra']['labels.source']);
     }
 
     public function testAllMetricTypesAreAccepted(): void
@@ -621,19 +639,20 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testTagsExtractedFromExtra(): void
+    public function testTagsInExtraAreNotExtractedAndRemainInExtra(): void
     {
+        // extra is opaque: tags inside extra are NOT promoted to top-level
         $record = $this->createRecord(extra: [
             'tags' => ['background'],
         ]);
 
         $output = $this->formatAndDecode($record);
 
-        self::assertSame(['background'], $output['tags']);
-        self::assertArrayNotHasKey('extra', $output);
+        self::assertArrayNotHasKey('tags', $output);
+        self::assertSame(['background'], $output['extra']['tags']);
     }
 
-    public function testTagsMergedAndDeduplicated(): void
+    public function testTagsExtractedFromContextOnlyNotMergedFromExtra(): void
     {
         $record = $this->createRecord(
             context: ['tags' => ['web', 'production']],
@@ -642,10 +661,10 @@ class EcsFieldsFormatterTest extends TestCase
 
         $output = $this->formatAndDecode($record);
 
-        self::assertContains('web', $output['tags']);
-        self::assertContains('production', $output['tags']);
-        self::assertContains('internal', $output['tags']);
-        self::assertCount(3, $output['tags']);
+        // Only context tags are promoted; extra tags are NOT merged in
+        self::assertSame(['web', 'production'], $output['tags']);
+        // extra tags stay verbatim in extra
+        self::assertSame(['web', 'internal'], $output['extra']['tags']);
     }
 
     public function testTagsNonStringValuesStayInRemainder(): void

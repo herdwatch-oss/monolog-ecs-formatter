@@ -9,12 +9,13 @@ use Monolog\LogRecord;
 
 /**
  * Monolog formatter that extracts known keys (labels, metric, text, tags)
- * from context/extra and promotes them to top-level JSON fields for proper Elasticsearch mapping.
+ * from context and promotes them to top-level JSON fields for proper Elasticsearch mapping.
  *
  * Metric values are type-coerced: *_count/*_total → int, is_* → bool, everything else → float.
  * Tags are promoted as a flat array of unique keyword strings (ECS base field).
  *
- * For overlapping keys between context and extra, context wins (per-call data overrides processor baseline).
+ * extra is treated as opaque processor data: its contents are NOT scanned for extractable namespaces
+ * and are re-emitted verbatim (after service/error identity fields have been lifted out).
  *
  * Modes:
  *   Move (default): relocate fields to ECS top-level and drop originals — clean ECS-only end-state.
@@ -52,22 +53,22 @@ class EcsFieldsFormatter extends JsonFormatter
 
         $output = $this->buildBaseFields($normalized);
 
-        $extra = $this->unflattenDotKeys(is_array($normalized['extra'] ?? null) ? $normalized['extra'] : []);
+        // extra is opaque processor data — never unflattened or scanned for extractable namespaces.
+        $extra = is_array($normalized['extra'] ?? null) ? $normalized['extra'] : [];
         $context = $this->unflattenDotKeys(is_array($normalized['context'] ?? null) ? $normalized['context'] : []);
 
         if ($this->mode === EcsFormatMode::Copy) {
-            // In copy mode, run namespace extraction against copies so originals are preserved.
-            $extraCopy = $extra;
+            // In copy mode, run namespace extraction against a copy of context so the original is preserved.
             $contextCopy = $context;
 
-            $output = $this->extractNamespaces($output, $extraCopy, $contextCopy);
-            $output = $this->extractTags($output, $extraCopy, $contextCopy);
+            $output = $this->extractNamespaces($output, $contextCopy);
+            $output = $this->extractTags($output, $contextCopy);
 
             // Promote bounded ECS objects (service, error) from the originals, then strip them
             // from the originals since they will appear at top-level.
             $output = $this->promoteEcsObjects($output, $context, $extra);
 
-            // Re-emit original context/extra (minus the promoted ECS objects) so nothing is lost.
+            // Re-emit original context (minus the promoted ECS objects) and extra verbatim so nothing is lost.
             if ($context) {
                 $output['context'] = $context;
             }
@@ -76,8 +77,8 @@ class EcsFieldsFormatter extends JsonFormatter
                 $output['extra'] = $extra;
             }
         } else {
-            $output = $this->extractNamespaces($output, $extra, $context);
-            $output = $this->extractTags($output, $extra, $context);
+            $output = $this->extractNamespaces($output, $context);
+            $output = $this->extractTags($output, $context);
 
             // Promote bounded ECS objects (service, error) in move mode too.
             $output = $this->promoteEcsObjects($output, $context, $extra);
@@ -156,47 +157,35 @@ class EcsFieldsFormatter extends JsonFormatter
     }
 
     /**
-     * Extract known keys (labels, metric, text) from extra/context, coerce values,
-     * and promote them to top-level output fields. Context wins for overlapping keys.
+     * Extract known keys (labels, metric, text) from context, coerce values,
+     * and promote them to top-level output fields.
      *
-     * Remainders are written back to $extra/$context by reference.
+     * Remainders are written back to $context by reference.
+     * extra is not scanned — it is re-emitted verbatim by the caller.
      *
      * @param array<string, mixed> $output
-     * @param array<string, mixed> $extra
      * @param array<string, mixed> $context
      * @return array<string, mixed>
      */
-    private function extractNamespaces(array $output, array &$extra, array &$context): array
+    private function extractNamespaces(array $output, array &$context): array
     {
         foreach (self::EXTRACTABLE_KEYS as $key) {
-            $extraValues = $extra[$key] ?? [];
             $contextValues = $context[$key] ?? [];
 
-            unset($extra[$key], $context[$key]);
-
-            if (!is_array($extraValues)) {
-                $extraValues = [$extraValues];
-            }
+            unset($context[$key]);
 
             if (!is_array($contextValues)) {
                 $contextValues = [$contextValues];
             }
 
-            [$extraCoerced, $extraRemainder] = $this->coerceValues($key, $extraValues);
             [$contextCoerced, $contextRemainder] = $this->coerceValues($key, $contextValues);
-
-            if ($extraRemainder) {
-                $extra[$key] = $extraRemainder;
-            }
 
             if ($contextRemainder) {
                 $context[$key] = $contextRemainder;
             }
 
-            $merged = array_merge($extraCoerced, $contextCoerced);
-
-            if ($merged) {
-                $output[$key] = $merged;
+            if ($contextCoerced) {
+                $output[$key] = $contextCoerced;
             }
         }
 
@@ -204,31 +193,26 @@ class EcsFieldsFormatter extends JsonFormatter
     }
 
     /**
-     * Extract tags from extra/context, merge, deduplicate, and promote to top-level.
+     * Extract tags from context, deduplicate, and promote to top-level.
      *
-     * Remainders are written back to $extra/$context by reference.
+     * Remainders are written back to $context by reference.
+     * extra is not scanned — it is re-emitted verbatim by the caller.
      *
      * @param array<string, mixed> $output
-     * @param array<string, mixed> $extra
      * @param array<string, mixed> $context
      * @return array<string, mixed>
      */
-    private function extractTags(array $output, array &$extra, array &$context): array
+    private function extractTags(array $output, array &$context): array
     {
-        [$extraTags, $extraTagRemainder] = $this->partitionTags($extra['tags'] ?? []);
         [$contextTags, $contextTagRemainder] = $this->partitionTags($context['tags'] ?? []);
 
-        unset($extra['tags'], $context['tags']);
-
-        if ($extraTagRemainder) {
-            $extra['tags'] = $extraTagRemainder;
-        }
+        unset($context['tags']);
 
         if ($contextTagRemainder) {
             $context['tags'] = $contextTagRemainder;
         }
 
-        $mergedTags = array_values(array_unique([...$extraTags, ...$contextTags]));
+        $mergedTags = array_values(array_unique($contextTags));
 
         if ($mergedTags) {
             $output['tags'] = $mergedTags;
