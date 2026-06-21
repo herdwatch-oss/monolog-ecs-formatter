@@ -66,6 +66,27 @@ $log->info('User authenticated', [
 
 Multiple bags of the same kind merge. `EcsField` objects are detected in **both** `context` and `extra` (context wins on a conflict) — this is how the identity processor's injected `Service` object gets promoted. Anything that is **not** an `EcsField` is left alone: non-field context goes under a leftover `context` object, and `extra` is emitted verbatim.
 
+### Recommended usage
+
+Pass field objects **positionally, without a key**. The key is ignored for routing anyway, so a key is redundant and misleading; positional also reads cleanly and lets multiple fields merge:
+
+```php
+// ✅ Recommended — positional
+$log->error('Sync failed', [
+    new EcsError($e),
+    new Service('billing-svc'),
+    Labels::create()->add('tenant', 'acme'),
+]);
+
+// ⚠️ Works, but the key is redundant (it is NOT used to route the field)
+$log->error('Sync failed', ['error' => new EcsError($e)]);
+```
+
+Reserve string keys for the two cases where the key genuinely matters:
+
+- the `exception` convention — `['exception' => $e]` with a raw `\Throwable`, which the formatter auto-promotes to `error.*`;
+- ordinary scalar context you want to keep or interpolate — `['request_id' => $id]`.
+
 ## Governed namespaces (bags)
 
 | Bag | ECS field | Value typing | Cap |
