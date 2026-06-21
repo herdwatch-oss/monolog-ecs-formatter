@@ -172,6 +172,20 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame('RuntimeException', $output['error']['type']);
     }
 
+    public function testContextExceptionPromotedAndKeptInContext(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'exception' => new \RuntimeException('db down'),
+        ]));
+
+        // Promoted to top-level error.*
+        self::assertSame('RuntimeException', $output['error']['type']);
+        self::assertSame('db down', $output['error']['message']);
+        // Copy mode keeps the original exception under context (Monolog-normalised) for compatibility.
+        self::assertArrayHasKey('exception', $output['context']);
+        self::assertSame('db down', $output['context']['exception']['message']);
+    }
+
     public function testServiceContextWinsOverExtra(): void
     {
         $output = $this->formatAndDecode($this->createRecord(

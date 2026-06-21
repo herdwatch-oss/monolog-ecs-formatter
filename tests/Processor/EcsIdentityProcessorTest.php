@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Tests\Processor;
 
-use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Processor\EcsIdentityProcessor;
 use Monolog\Level;
@@ -32,8 +31,6 @@ class EcsIdentityProcessorTest extends TestCase
         );
     }
 
-    // --- service object always injected ---
-
     public function testServiceObjectInjectedIntoExtra(): void
     {
         $result = (new EcsIdentityProcessor('my-service'))($this->createRecord());
@@ -52,81 +49,26 @@ class EcsIdentityProcessorTest extends TestCase
         self::assertSame('my-other-service', $result->extra['service']->toEcs()['service']['name']);
     }
 
-    // --- error object only on a Throwable context exception ---
-
-    public function testErrorObjectInjectedWhenContextExceptionIsThrowable(): void
+    public function testProcessorDoesNotHandleExceptions(): void
     {
+        // Exception → error.* is the formatter's job; the identity processor must not touch it.
         $result = (new EcsIdentityProcessor('my-service'))(
-            $this->createRecord(context: ['exception' => new \RuntimeException('DB connection failed')]),
-        );
-
-        self::assertInstanceOf(EcsError::class, $result->extra['error']);
-
-        $error = $result->extra['error']->toEcs()['error'];
-        self::assertSame('RuntimeException', $error['type']);
-        self::assertSame('DB connection failed', $error['message']);
-        self::assertIsString($error['stack_trace']);
-    }
-
-    public function testErrorObjectInjectedWhenContextExceptionIsError(): void
-    {
-        $result = (new EcsIdentityProcessor('my-service'))(
-            $this->createRecord(context: ['exception' => new \TypeError('Type mismatch')]),
-        );
-
-        self::assertSame('Type mismatch', $result->extra['error']->toEcs()['error']['message']);
-    }
-
-    // --- error NOT injected when absent / non-Throwable ---
-
-    public function testNoErrorWhenExceptionAbsent(): void
-    {
-        $result = (new EcsIdentityProcessor('my-service'))($this->createRecord());
-
-        self::assertArrayNotHasKey('error', $result->extra);
-    }
-
-    public function testNoErrorWhenExceptionIsString(): void
-    {
-        $result = (new EcsIdentityProcessor('my-service'))(
-            $this->createRecord(context: ['exception' => 'error message string']),
+            $this->createRecord(context: ['exception' => new \RuntimeException('db down')]),
         );
 
         self::assertArrayNotHasKey('error', $result->extra);
     }
 
-    public function testNoErrorWhenExceptionIsNull(): void
-    {
-        $result = (new EcsIdentityProcessor('my-service'))(
-            $this->createRecord(context: ['exception' => null]),
-        );
-
-        self::assertArrayNotHasKey('error', $result->extra);
-    }
-
-    public function testNoErrorWhenExceptionIsInteger(): void
-    {
-        $result = (new EcsIdentityProcessor('my-service'))(
-            $this->createRecord(context: ['exception' => 42]),
-        );
-
-        self::assertArrayNotHasKey('error', $result->extra);
-    }
-
-    // --- non-throwing ---
-
-    public function testProcessorDoesNotThrow(): void
+    public function testProcessorDoesNotThrowOnOddContext(): void
     {
         $processor = new EcsIdentityProcessor('my-service');
 
         $this->expectNotToPerformAssertions();
 
         $processor($this->createRecord(context: ['exception' => new \stdClass()]));
-        $processor($this->createRecord(context: ['exception' => []]));
+        $processor($this->createRecord(context: ['exception' => 'a string']));
         $processor($this->createRecord(context: []));
     }
-
-    // --- original record preserved ---
 
     public function testOriginalMessageUnmodified(): void
     {

@@ -63,7 +63,7 @@ $log->info('User authenticated', [
 ]);
 ```
 
-Multiple bags of the same kind merge. `EcsField` objects are detected in **both** `context` and `extra` (context wins on a conflict) — this is how the identity processor's injected objects get promoted. Anything that is **not** an `EcsField` is left alone: non-field context goes under a leftover `context` object, and `extra` is emitted verbatim.
+Multiple bags of the same kind merge. `EcsField` objects are detected in **both** `context` and `extra` (context wins on a conflict) — this is how the identity processor's injected `Service` object gets promoted. Anything that is **not** an `EcsField` is left alone: non-field context goes under a leftover `context` object, and `extra` is emitted verbatim.
 
 ## Governed namespaces (bags)
 
@@ -143,9 +143,13 @@ To apply a custom field to **every** record, inject it from a Monolog processor 
 | `event.kind` / `module` / `dataset` | `event` / `symfony` / `symfony.logs` |
 | `event.created` / `severity` | record datetime / Monolog level integer |
 
-## Identity processor (`service.*` / `error.*`)
+## Exceptions
 
-When `service_name` is configured, `EcsIdentityProcessor` is registered as a global Monolog processor. It injects a `Service` object into every record and, when `context['exception']` is a `\Throwable`, an `EcsError` object — both of which the formatter then promotes. Omitting `service_name` disables it entirely.
+A `\Throwable` at `context['exception']` (the Monolog convention) is promoted to `error.*` by the **formatter** automatically — no processor or configuration required. So existing `$log->error($msg, ['exception' => $e])` call sites get `error.{type,message,code,stack_trace}` for free. In move mode the consumed exception is then removed from the leftover context; in copy mode it is kept (Monolog-normalised) for dashboard compatibility. An explicit `new EcsError($e)` always takes precedence.
+
+## Service identity processor (`service.*`)
+
+When `service_name` is configured, `EcsIdentityProcessor` is registered as a global Monolog processor and injects a `Service` object into every record, which the formatter promotes to `service.*`. Omitting `service_name` disables it. The processor does **not** handle exceptions — that is the formatter's job (see above).
 
 ## Modes
 

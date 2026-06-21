@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Formatter;
 
+use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
 use Herdwatch\MonologEcsFormatter\Ecs\Key;
 use Monolog\Formatter\JsonFormatter;
@@ -17,7 +18,8 @@ use Monolog\LogRecord;
  * Service, User, Tracing, EcsError and any project-specific EcsField). The objects are detected by
  * `instanceof` in the raw context/extra — the array key is irrelevant, so they may be passed
  * positionally or under any key. Ordinary (non-EcsField) context flows, un-promoted, into a
- * leftover `context` object; `extra` is emitted verbatim.
+ * leftover `context` object; `extra` is emitted verbatim. A `\Throwable` at `context['exception']`
+ * (the Monolog convention) is promoted to `error.*` — kept in `context` in copy mode, removed in move mode.
  *
  * Governed namespaces (labels, metric, text, tags) get key-name validation and a per-namespace cap
  * regardless of which EcsField produced them. Anything that can't be promoted is never dropped:
@@ -74,6 +76,7 @@ class EcsFieldsFormatter extends JsonFormatter
         $fragments = [];
         $this->pullFields($extra, $fragments);
         $this->pullFields($context, $fragments);
+        $this->promoteContextException($context, $fragments);
 
         $datetime = $this->formatDatetime($record);
         $output = $this->buildBaseFields($record, $datetime);
@@ -124,6 +127,34 @@ class EcsFieldsFormatter extends JsonFormatter
             }
 
             unset($bag[$key]);
+        }
+    }
+
+    /**
+     * Promote a \Throwable at context['exception'] (the Monolog convention) to error.* via EcsError.
+     * An explicit EcsError contributed by a bag takes precedence. In move mode the consumed exception
+     * is removed from the leftover context; in copy mode it is kept (Monolog-normalised) for
+     * dashboard compatibility.
+     *
+     * @param array<array-key, mixed> $context   modified by reference
+     * @param array<string, mixed>    $fragments modified by reference
+     */
+    private function promoteContextException(array &$context, array &$fragments): void
+    {
+        $exception = $context['exception'] ?? null;
+
+        if (!$exception instanceof \Throwable) {
+            return;
+        }
+
+        if (!isset($fragments['error'])) {
+            foreach ((new EcsError($exception))->toEcs() as $field => $payload) {
+                $fragments[$field] = $payload;
+            }
+        }
+
+        if ($this->mode === EcsFormatMode::Move) {
+            unset($context['exception']);
         }
     }
 

@@ -4,18 +4,17 @@ declare(strict_types=1);
 
 namespace Herdwatch\MonologEcsFormatter\Processor;
 
-use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Monolog\LogRecord;
 use Monolog\Processor\ProcessorInterface;
 
 /**
- * Attaches ECS identity objects to every record so they ride the single EcsField path:
- *   - extra.service = new Service($serviceName)            — always
- *   - extra.error   = new EcsError($throwable)             — only when context['exception'] is a \Throwable
+ * Attaches the ECS service identity to every record so it rides the single EcsField path:
+ *   - extra.service = new Service($serviceName)
  *
- * The formatter then promotes both to top-level ECS fields (service.*, error.*).
- * This processor is non-throwing: a non-Throwable exception value is silently ignored.
+ * The formatter then promotes it to top-level service.* fields. Exception handling is NOT this
+ * processor's concern: the formatter promotes a \Throwable at context['exception'] to error.* on
+ * its own, regardless of whether this processor is registered.
  */
 final class EcsIdentityProcessor implements ProcessorInterface
 {
@@ -30,12 +29,6 @@ final class EcsIdentityProcessor implements ProcessorInterface
         $extra = $record->extra;
 
         $extra['service'] = new Service($this->serviceName, language: $this->language);
-
-        $exception = $record->context['exception'] ?? null;
-
-        if ($exception instanceof \Throwable) {
-            $extra['error'] = new EcsError($exception);
-        }
 
         return $record->with(extra: $extra);
     }

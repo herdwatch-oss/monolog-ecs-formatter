@@ -273,6 +273,40 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertIsString($output['error']['stack_trace']);
     }
 
+    public function testContextExceptionPromotedToErrorAndStripped(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'exception' => new \RuntimeException('db down', 42),
+        ]));
+
+        self::assertSame('RuntimeException', $output['error']['type']);
+        self::assertSame('db down', $output['error']['message']);
+        self::assertSame('42', $output['error']['code']);
+        // Move mode strips the consumed exception — no duplicate under context.
+        self::assertArrayNotHasKey('context', $output);
+    }
+
+    public function testNonThrowableExceptionStaysInContext(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            'exception' => 'just a string',
+        ]));
+
+        self::assertArrayNotHasKey('error', $output);
+        self::assertSame('just a string', $output['context']['exception']);
+    }
+
+    public function testExplicitEcsErrorWinsOverContextException(): void
+    {
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new EcsError(new \LogicException('explicit')),
+            'exception' => new \RuntimeException('raw'),
+        ]));
+
+        self::assertSame('explicit', $output['error']['message']);
+        self::assertArrayNotHasKey('context', $output);
+    }
+
     // --- extra ---
 
     public function testExtraEmittedVerbatimAndNotScannedForArrays(): void
