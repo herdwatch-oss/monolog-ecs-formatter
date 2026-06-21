@@ -57,39 +57,26 @@ class EcsFieldsFormatter extends JsonFormatter
         $extra = is_array($normalized['extra'] ?? null) ? $normalized['extra'] : [];
         $context = $this->unflattenDotKeys(is_array($normalized['context'] ?? null) ? $normalized['context'] : []);
 
-        if ($this->mode === EcsFormatMode::Copy) {
-            // In copy mode, run namespace extraction against a copy of context so the original is preserved.
-            $contextCopy = $context;
+        // Extract namespaces from a working copy of context. In move mode the namespace keys are
+        // consumed, so the remainder is re-emitted; in copy mode the original context is preserved
+        // intact (promoted values appear both top-level and under their original context location).
+        $working = $context;
+        $output = $this->extractNamespaces($output, $working);
+        $output = $this->extractTags($output, $working);
 
-            $output = $this->extractNamespaces($output, $contextCopy);
-            $output = $this->extractTags($output, $contextCopy);
+        $leftoverContext = $this->mode === EcsFormatMode::Copy ? $context : $working;
 
-            // Promote bounded ECS objects (service, error) from the originals, then strip them
-            // from the originals since they will appear at top-level.
-            $output = $this->promoteEcsObjects($output, $context, $extra);
+        // Promote bounded ECS objects (service, error) from context/extra in both modes, stripping
+        // them from the leftovers since they now appear at top-level.
+        $output = $this->promoteEcsObjects($output, $leftoverContext, $extra);
 
-            // Re-emit original context (minus the promoted ECS objects) and extra verbatim so nothing is lost.
-            if ($context) {
-                $output['context'] = $context;
-            }
+        // Re-emit whatever is left so nothing is lost.
+        if ($leftoverContext) {
+            $output['context'] = $leftoverContext;
+        }
 
-            if ($extra) {
-                $output['extra'] = $extra;
-            }
-        } else {
-            $output = $this->extractNamespaces($output, $context);
-            $output = $this->extractTags($output, $context);
-
-            // Promote bounded ECS objects (service, error) in move mode too.
-            $output = $this->promoteEcsObjects($output, $context, $extra);
-
-            if ($extra) {
-                $output['extra'] = $extra;
-            }
-
-            if ($context) {
-                $output['context'] = $context;
-            }
+        if ($extra) {
+            $output['extra'] = $extra;
         }
 
         return $this->toJson($output) . "\n";
