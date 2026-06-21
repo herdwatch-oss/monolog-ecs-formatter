@@ -40,9 +40,9 @@ class TestLogFormatterCommand extends Command
             ],
         ]);
 
-        // 3. Flags
+        // 3. Boolean metrics (is_* keys are coerced to bool and promoted under metric)
         $this->logger->notice('Cache lookup.', [
-            'flags' => ['is_cached' => (bool) random_int(0, 1), 'is_retry' => (bool) random_int(0, 1)],
+            'metric' => ['is_cached' => (bool) random_int(0, 1), 'is_retry' => (bool) random_int(0, 1)],
         ]);
 
         // 4. Text
