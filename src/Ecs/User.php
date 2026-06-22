@@ -14,6 +14,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class User implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly string|int|null $id = null,
         private readonly ?string $name = null,

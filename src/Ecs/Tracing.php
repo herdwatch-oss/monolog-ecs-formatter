@@ -15,6 +15,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Tracing implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly string $traceId,
         private readonly ?string $transactionId = null,

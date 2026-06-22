@@ -19,6 +19,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Event implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly ?string $action = null,
         private readonly ?\DateTimeInterface $start = null,

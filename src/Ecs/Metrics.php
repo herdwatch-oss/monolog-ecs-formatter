@@ -22,6 +22,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Metrics implements EcsField
 {
+    use SerializesToEcs;
+
     /** @var array<string, int|float|bool> */
     private array $data = [];
 

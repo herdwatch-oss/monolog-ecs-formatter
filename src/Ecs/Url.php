@@ -22,6 +22,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Url implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly ?string $path = null,
         private readonly ?string $domain = null,

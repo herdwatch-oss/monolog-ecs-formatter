@@ -15,6 +15,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Tags implements EcsField
 {
+    use SerializesToEcs;
+
     /** @var list<string> */
     private array $tags = [];
 

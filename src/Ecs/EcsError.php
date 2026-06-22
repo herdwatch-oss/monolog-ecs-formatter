@@ -16,6 +16,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class EcsError implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(private readonly \Throwable $throwable)
     {
     }

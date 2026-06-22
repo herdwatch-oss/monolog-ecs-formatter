@@ -13,6 +13,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
 use Herdwatch\MonologEcsFormatter\Ecs\Process;
+use Herdwatch\MonologEcsFormatter\Ecs\SerializesToEcs;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
@@ -107,6 +108,8 @@ class TestLogFormatterCommand extends Command
 
         // 9. A project-specific EcsField is detected automatically (no registration needed).
         $farmContext = new class (random_int(1000, 9999), 'munster') implements EcsField {
+            use SerializesToEcs;
+
             public function __construct(private int $herdId, private string $region)
             {
             }

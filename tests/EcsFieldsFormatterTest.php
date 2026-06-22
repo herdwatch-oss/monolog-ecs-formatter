@@ -12,6 +12,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
 use Herdwatch\MonologEcsFormatter\Ecs\Process;
+use Herdwatch\MonologEcsFormatter\Ecs\SerializesToEcs;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Herdwatch\MonologEcsFormatter\Ecs\Tags;
 use Herdwatch\MonologEcsFormatter\Ecs\Text;
@@ -373,6 +374,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testCustomEcsFieldIsPromotedAutomatically(): void
     {
         $farm = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['farm' => ['herd_id' => 1234, 'region' => 'munster']];
@@ -387,6 +390,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testBaseSkeletonIsProtectedFromFragments(): void
     {
         $malicious = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return [
@@ -442,6 +447,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testNonArrayGovernedFragmentIsDemotedNotDropped(): void
     {
         $scalarMetric = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['metric' => 42];
@@ -457,6 +464,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testNestedLogLevelFromFragmentIsStripped(): void
     {
         $logFragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['log' => ['level' => 'HACK', 'origin' => ['file' => ['name' => 'x.php']]]];
@@ -476,6 +485,8 @@ class EcsFieldsFormatterTest extends TestCase
         // `context` is a reserved output bucket, not an ECS field. A fragment using it is demoted
         // (nested under context.context), preserving its data without corrupting the bucket.
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['context' => ['injected' => 'frag']];
@@ -493,6 +504,8 @@ class EcsFieldsFormatterTest extends TestCase
         // `extra` is likewise reserved (Monolog's verbatim bucket); a fragment targeting it is
         // demoted under context.extra and the real extra bucket is untouched.
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['extra' => ['injected' => 'frag']];
@@ -513,6 +526,8 @@ class EcsFieldsFormatterTest extends TestCase
         // Symmetric to the log.level case: the base owns the dotted ecs.version, so a nested
         // ecs.version contribution is stripped to avoid a duplicate field; siblings pass through.
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['ecs' => ['version' => '9.9.9', 'custom' => 'kept']];
@@ -530,6 +545,8 @@ class EcsFieldsFormatterTest extends TestCase
         // A fragment whose only contribution was the stripped ecs.version adds nothing — no empty
         // `ecs` object, no demotion.
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['ecs' => ['version' => '9.9.9']];
@@ -546,6 +563,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testProtectedScalarFragmentYieldsToCollidingPlainContextKey(): void
     {
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['message' => 'from-fragment'];
@@ -566,6 +585,8 @@ class EcsFieldsFormatterTest extends TestCase
         // A plain context key set to null still counts as "logged" — first-write precedence keeps
         // it rather than letting the demoted fragment value replace it (array_key_exists, not ??=).
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['message' => 'from-fragment'];
@@ -582,6 +603,8 @@ class EcsFieldsFormatterTest extends TestCase
     public function testProtectedScalarFragmentIsDemotedNotDropped(): void
     {
         $fragment = new class () implements EcsField {
+            use SerializesToEcs;
+
             public function toEcs(): array
             {
                 return ['message' => 'OVERRIDE', 'ecs.version' => '0'];

@@ -14,6 +14,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Process implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly ?int $pid = null,
         private readonly ?string $commandLine = null,

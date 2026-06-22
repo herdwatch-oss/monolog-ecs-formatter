@@ -15,6 +15,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Text implements EcsField
 {
+    use SerializesToEcs;
+
     /** @var array<string, string> */
     private array $data = [];
 

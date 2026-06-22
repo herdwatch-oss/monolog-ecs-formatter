@@ -14,6 +14,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Http implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(
         private readonly ?int $statusCode = null,
         private readonly ?string $method = null,

@@ -20,8 +20,13 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  * Fragments targeting a governed namespace (labels, metric, text, tags) are validated, type-safe
  * (the bag's method signatures enforce value types) and capped by the formatter; everything else
  * is passed through. A fragment can never overwrite the base ECS skeleton.
+ *
+ * EcsField is also {@see \JsonSerializable}: under any other formatter/handler (which never pulls
+ * the object out), it still serialises to its ECS data rather than an empty `{}`. Implementations
+ * should `use {@see SerializesToEcs}` to get `jsonSerialize()` for free. EcsFieldsFormatter is
+ * unaffected — it pulls EcsField objects by instanceof before normalisation.
  */
-interface EcsField
+interface EcsField extends \JsonSerializable
 {
     /**
      * The ECS field fragment this object contributes, already in its final nested shape.

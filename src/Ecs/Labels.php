@@ -17,6 +17,8 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  */
 final class Labels implements EcsField
 {
+    use SerializesToEcs;
+
     /** @var array<string, string> */
     private array $data = [];
 
