@@ -20,6 +20,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
 use Herdwatch\MonologEcsFormatter\Ecs\Url;
 use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter;
+use Herdwatch\MonologEcsFormatter\Processor\EcsIdentityProcessor;
 use Monolog\Level;
 use Monolog\LogRecord;
 use PHPUnit\Framework\TestCase;
@@ -367,6 +368,80 @@ class EcsFieldsFormatterTest extends TestCase
         ));
 
         self::assertSame('context-svc', $output['service']['name']);
+    }
+
+    public function testServiceBagsUnderDistinctExtraKeysAreMerged(): void
+    {
+        // A second processor can enrich service.* by emitting another Service under a DIFFERENT key:
+        // the formatter pulls every EcsField by type and deep-merges by namespace, so all fields land
+        // in one service object.
+        $output = $this->formatAndDecode($this->createRecord(extra: [
+            'service' => new Service('billing'),                                        // e.g. EcsIdentityProcessor
+            'svc_extra' => new Service('billing', version: '2.0', environment: 'prod'), // a project processor
+        ]));
+
+        self::assertSame(
+            ['name' => 'billing', 'language' => 'php', 'version' => '2.0', 'environment' => 'prod'],
+            $output['service'],
+        );
+    }
+
+    public function testServicesUnderTheSameExtraKeyDoNotMergeOnlyTheLastSurvives(): void
+    {
+        // Two Service objects can't co-exist under one key — the array overwrites before the
+        // formatter sees it, so they do NOT merge. Distinct keys (above) are required to combine them.
+        $extra = ['service' => new Service('first', version: '1.0')];
+        $extra['service'] = new Service('second'); // a processor reusing the 'service' key
+
+        $output = $this->formatAndDecode($this->createRecord(extra: $extra));
+
+        self::assertSame(['name' => 'second', 'language' => 'php'], $output['service']);
+    }
+
+    public function testEcsIdentityProcessorServiceMergesWithAProjectServiceBag(): void
+    {
+        // EcsIdentityProcessor adds extra['service']; a project processor had already added its own
+        // Service under a different key. Both are promoted and merged into one service object — on a
+        // key clash the later-scanned 'service' (the processor's) wins, the project's extra fields survive.
+        $record = (new EcsIdentityProcessor('identity-svc'))(
+            $this->createRecord(extra: ['app_service' => new Service('app', version: '4.0', environment: 'prod')]),
+        );
+
+        $output = json_decode($this->formatter->format($record), true);
+
+        self::assertSame(
+            ['name' => 'identity-svc', 'language' => 'php', 'version' => '4.0', 'environment' => 'prod'],
+            $output['service'],
+        );
+    }
+
+    public function testPositionalServiceBagsInExtraMergeWithoutColliding(): void
+    {
+        // Detection is by type, not key — positional appends ($extra[] = …) from different processors
+        // get distinct integer indices, so none clobbers another (unlike reusing 'service'); all merge.
+        $extra = [];
+        $extra[] = new Service('billing');                                      // processor A
+        $extra[] = new Service('billing', version: '2.0', environment: 'prod'); // processor B
+
+        $output = $this->formatAndDecode($this->createRecord(extra: $extra));
+
+        self::assertSame(
+            ['name' => 'billing', 'language' => 'php', 'version' => '2.0', 'environment' => 'prod'],
+            $output['service'],
+        );
+        self::assertArrayNotHasKey('extra', $output); // both pulled out — nothing left behind
+    }
+
+    public function testKeyedAndPositionalServiceBagsBothMerge(): void
+    {
+        // A keyed bag (e.g. EcsIdentityProcessor's extra['service']) and a positionally-appended one
+        // are both detected by type and merged into a single service object.
+        $extra = ['service' => new Service('billing')];
+        $extra[] = new Service('billing', version: '3.0');
+
+        $output = $this->formatAndDecode($this->createRecord(extra: $extra));
+
+        self::assertSame(['name' => 'billing', 'language' => 'php', 'version' => '3.0'], $output['service']);
     }
 
     // --- Project-specific EcsField is auto-detected ---
