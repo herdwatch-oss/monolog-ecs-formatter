@@ -148,6 +148,8 @@ $log->info('Inbound request', [
 ]);
 ```
 
+> `Url` records the URL faithfully — `url.full`/`url.query` keep whatever you pass, including any embedded credentials or query tokens/PII. Redaction is the application's job: sanitise the URL before logging it, or strip sensitive fields in a Monolog processor.
+
 ## Project-specific fields
 
 Any class implementing `EcsField` is detected automatically — no registration, no formatter change:

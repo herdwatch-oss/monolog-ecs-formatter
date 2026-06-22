@@ -6,8 +6,13 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
 
 /**
  * ECS `url.*` fields — the parts of a request URL, logged as first-class fields. Immutable;
- * construct with named arguments, or use {@see Url::parse()} to split a URL string. Null fields
- * are omitted. `query` is stored without its leading `?` (the ECS convention).
+ * construct with named arguments, or use {@see Url::parse()} to split a URL string. Null and
+ * empty-string fields are omitted; `scheme` is lower-cased and `query` is stored without its
+ * leading `?` (the ECS conventions).
+ *
+ * Security: the URL is recorded faithfully — `url.full`/`url.query` keep whatever you pass,
+ * including any embedded credentials (`user:pass@`) or query tokens/PII. Redaction is the
+ * caller's responsibility (e.g. a Monolog processor, or sanitise the URL before constructing this).
  *
  * Example:
  *   new Url(path: '/herds/42', domain: 'app.herdwatch.com', scheme: 'https', query: 'view=summary');
@@ -30,8 +35,8 @@ final class Url implements EcsField
 
     /**
      * Split a URL string into its ECS url.* parts (scheme, domain, port, path, query, fragment),
-     * keeping the original string as url.full. Parts the URL omits are left null. A string that
-     * cannot be parsed is still recorded verbatim as url.full rather than discarded.
+     * keeping the original as url.full. Parts the URL omits are left null. A string that cannot be
+     * parsed is still recorded verbatim as url.full.
      */
     public static function parse(string $url): self
     {
@@ -57,14 +62,14 @@ final class Url implements EcsField
         $url = array_filter(
             [
                 'full' => $this->full,
-                'scheme' => $this->scheme,
+                'scheme' => $this->scheme !== null ? strtolower($this->scheme) : null,
                 'domain' => $this->domain,
                 'port' => $this->port,
                 'path' => $this->path,
                 'query' => $this->query,
                 'fragment' => $this->fragment,
             ],
-            static fn (string|int|null $value): bool => $value !== null,
+            static fn (string|int|null $value): bool => $value !== null && $value !== '',
         );
 
         return $url === [] ? [] : ['url' => $url];

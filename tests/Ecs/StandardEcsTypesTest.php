@@ -92,4 +92,36 @@ class StandardEcsTypesTest extends TestCase
         // parse_url() rejects a URL with a malformed port; the raw value is still kept, not lost.
         self::assertSame(['url' => ['full' => 'http://:-1']], Url::parse('http://:-1')->toEcs());
     }
+
+    public function testUrlParseRecordsTheUrlVerbatimAsFull(): void
+    {
+        // Redaction is the caller's responsibility: parse() faithfully keeps the URL it is given
+        // (credentials and all) so url.full matches the real request URL.
+        $url = Url::parse('https://app.herdwatch.com:8443/herds/42?view=summary')->toEcs();
+
+        self::assertSame('https://app.herdwatch.com:8443/herds/42?view=summary', $url['url']['full']);
+        self::assertSame('app.herdwatch.com', $url['url']['domain']);
+    }
+
+    public function testUrlSchemeIsLowercased(): void
+    {
+        self::assertSame('https', Url::parse('HTTPS://X.TEST/p')->toEcs()['url']['scheme']);
+        self::assertSame('http', (new Url(scheme: 'HTTP'))->toEcs()['url']['scheme']);
+    }
+
+    public function testUrlOmitsEmptyStringComponents(): void
+    {
+        // A trailing '?' yields an empty query from parse_url; it should be omitted, not emitted as "".
+        self::assertArrayNotHasKey('query', Url::parse('https://x.test/p?')->toEcs()['url']);
+        // An empty input has no meaningful parts at all.
+        self::assertSame([], Url::parse('')->toEcs());
+    }
+
+    public function testUrlConstructorMapsPortAndFragment(): void
+    {
+        self::assertSame(
+            ['url' => ['scheme' => 'https', 'port' => 8443, 'path' => '/p', 'fragment' => 'top']],
+            (new Url(path: '/p', scheme: 'https', port: 8443, fragment: 'top'))->toEcs(),
+        );
+    }
 }
