@@ -725,6 +725,22 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertArrayNotHasKey('context', $output);
     }
 
+    public function testTwoHttpObjectsDeepMergeWithoutOverwritingMethodOrStatus(): void
+    {
+        // RND-50: request/response are nested, so a second Http (e.g. body sizes captured later) merges
+        // into the same sub-objects rather than clobbering the method/status_code from the first.
+        $output = $this->formatAndDecode($this->createRecord(context: [
+            new Http(statusCode: 200, method: 'POST'),
+            new Http(requestBodyBytes: 12, responseBodyBytes: 340, requestMimeType: 'application/json'),
+        ]));
+
+        self::assertSame(
+            ['method' => 'POST', 'body' => ['bytes' => 12], 'mime_type' => 'application/json'],
+            $output['http']['request'],
+        );
+        self::assertSame(['status_code' => 200, 'body' => ['bytes' => 340]], $output['http']['response']);
+    }
+
     public function testEventFragmentMergesWithBaseEventAndFormatsStart(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [

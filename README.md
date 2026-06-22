@@ -131,12 +131,12 @@ Bundled value objects for common runtime / request / host fields, so each servic
 
 | Object | ECS fields |
 |--------|-----------|
-| `Http` | `http.response.status_code`, `http.request.method` |
+| `Http` | `http.request.{method,body.bytes,mime_type}`, `http.response.{status_code,body.bytes,mime_type}` — request/response nest, so separate `Http` objects deep-merge |
 | `Process` | `process.pid`, `process.command_line`, `process.name` |
 | `Client` | `client.ip`, `client.port` |
 | `UserAgent` | `user_agent.original`, `user_agent.version`, `user_agent.device.name` |
 | `Host` | `host.name`, `host.ip` |
-| `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
+| `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds), `event.outcome` (the `EventOutcome` enum: success/failure/unknown) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
 | `Url` | `url.full`, `url.scheme`, `url.domain`, `url.port`, `url.path`, `url.query`, `url.fragment` — pass parts by name, or use `Url::parse($url)` to split a URL string |
 
 ```php

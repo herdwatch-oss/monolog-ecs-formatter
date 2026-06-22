@@ -6,6 +6,7 @@ namespace Herdwatch\MonologEcsFormatter\Tests\Ecs;
 
 use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\EventOutcome;
 use Herdwatch\MonologEcsFormatter\Ecs\Host;
 use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Process;
@@ -18,12 +19,39 @@ class StandardEcsTypesTest extends TestCase
     public function testHttpUppercasesMethodAndOmitsNulls(): void
     {
         self::assertSame(
-            ['http' => ['response' => ['status_code' => 500], 'request' => ['method' => 'POST']]],
+            ['http' => ['request' => ['method' => 'POST'], 'response' => ['status_code' => 500]]],
             (new Http(statusCode: 500, method: 'post'))->toEcs(),
         );
 
         self::assertSame(['http' => ['response' => ['status_code' => 404]]], (new Http(statusCode: 404))->toEcs());
         self::assertSame([], (new Http())->toEcs());
+    }
+
+    public function testHttpBodyBytesAndMimeTypeNestUnderRequestAndResponse(): void
+    {
+        self::assertSame(
+            ['http' => [
+                'request' => ['method' => 'POST', 'body' => ['bytes' => 12], 'mime_type' => 'application/json'],
+                'response' => ['status_code' => 200, 'body' => ['bytes' => 340], 'mime_type' => 'application/json'],
+            ]],
+            (new Http(
+                statusCode: 200,
+                method: 'POST',
+                requestBodyBytes: 12,
+                responseBodyBytes: 340,
+                requestMimeType: 'application/json',
+                responseMimeType: 'application/json',
+            ))->toEcs(),
+        );
+    }
+
+    public function testHttpBodyOnlyOmitsMethodAndStatus(): void
+    {
+        // Body bytes without method/status still nest correctly and omit the empty siblings.
+        self::assertSame(
+            ['http' => ['request' => ['body' => ['bytes' => 12]], 'response' => ['body' => ['bytes' => 340]]]],
+            (new Http(requestBodyBytes: 12, responseBodyBytes: 340))->toEcs(),
+        );
     }
 
     public function testProcess(): void
@@ -59,6 +87,23 @@ class StandardEcsTypesTest extends TestCase
     {
         self::assertSame(['event' => ['action' => 'farm.sync']], (new Event(action: 'farm.sync'))->toEcs());
         self::assertSame([], (new Event())->toEcs());
+    }
+
+    public function testEventOutcomeIsAddedAdditively(): void
+    {
+        self::assertSame(
+            ['event' => ['action' => 'farm.sync', 'outcome' => 'failure']],
+            (new Event(action: 'farm.sync', outcome: EventOutcome::Failure))->toEcs(),
+        );
+        self::assertSame(['event' => ['outcome' => 'success']], (new Event(outcome: EventOutcome::Success))->toEcs());
+    }
+
+    public function testEventOutcomeEnumCoversTheEcsAllowedValues(): void
+    {
+        self::assertSame(['success', 'failure', 'unknown'], array_map(
+            static fn (EventOutcome $o): string => $o->value,
+            EventOutcome::cases(),
+        ));
     }
 
     public function testEventFormatsStartAsIso8601String(): void
