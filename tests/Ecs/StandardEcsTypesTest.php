@@ -61,6 +61,16 @@ class StandardEcsTypesTest extends TestCase
         self::assertSame([], (new Event())->toEcs());
     }
 
+    public function testEventFormatsStartAsIso8601String(): void
+    {
+        // Rendered as a string in toEcs() (not a raw DateTime), so it serialises identically through
+        // EcsFieldsFormatter and any other handler.
+        self::assertSame(
+            ['event' => ['start' => '2026-06-21T11:59:59.250000+00:00']],
+            (new Event(start: new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00')))->toEcs(),
+        );
+    }
+
     public function testUrlOmitsNulls(): void
     {
         self::assertSame(

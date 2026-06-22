@@ -152,13 +152,16 @@ $log->info('Inbound request', [
 
 ## Project-specific fields
 
-Any class implementing `EcsField` is detected automatically — no registration, no formatter change:
+Any class implementing `EcsField` is detected automatically — no registration, no formatter change. `EcsField` extends `JsonSerializable`; `use SerializesToEcs` to satisfy it (it maps `jsonSerialize()` to `toEcs()`):
 
 ```php
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\SerializesToEcs;
 
 final class FarmContext implements EcsField
 {
+    use SerializesToEcs;
+
     public function __construct(private string $herdId, private string $region) {}
 
     public function toEcs(): array
@@ -175,6 +178,8 @@ Rules that keep this safe:
 - A fragment targeting a governed namespace (`metric`/`labels`/`text`/`tags`) is validated and capped like any bag, whatever produced it.
 - Unknown namespaces and new top-level fields pass through.
 - A fragment can never overwrite the base skeleton (`@timestamp`, `log.level`, `message`, `ecs.version`); contributions to `log`/`event` (e.g. `log.origin`) are merged additively, with the base winning conflicts.
+
+> **Serialisation under other handlers.** Because `EcsField` is `JsonSerializable`, the same object also serialises to its ECS data under a non-ECS formatter/handler (a JSON handler emits the bare fragment; a line-based one wraps it under the class name) instead of an empty `{}`. That path is *raw* `toEcs()` — the validation, caps and never-drop demotion above are applied only by `EcsFieldsFormatter`, which pulls the objects out before normalising. If a non-ECS handler needs the governed, promoted form, point it at `EcsFieldsFormatter` too.
 
 To apply a custom field to **every** record, inject it from a Monolog processor (the pattern the bundled identity processor uses).
 

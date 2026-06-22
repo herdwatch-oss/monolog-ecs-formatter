@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Herdwatch\MonologEcsFormatter\Tests\Ecs;
 
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
+use Herdwatch\MonologEcsFormatter\Ecs\Event;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
 use Herdwatch\MonologEcsFormatter\Ecs\Service;
 use Monolog\Formatter\JsonFormatter;
@@ -44,6 +45,24 @@ class SerializesToEcsTest extends TestCase
         // Real ECS data, not an empty object keyed by the FQCN.
         self::assertSame(['metric' => ['memory_bytes' => 123]], $output['context'][0]);
         self::assertSame(['service' => ['name' => 'billing', 'language' => 'php']], $output['extra']['service']);
+    }
+
+    public function testEventStartSerialisesAsIsoStringUnderPlainJsonFormatter(): void
+    {
+        // Regression: a raw DateTime would render as {"date":…,"timezone_type":…} (and break an ES
+        // date mapping) under a non-ECS handler. Event formats it to an ISO string in toEcs().
+        $record = new LogRecord(
+            datetime: new \DateTimeImmutable(),
+            channel: 'app',
+            level: Level::Info,
+            message: 'm',
+            context: [new Event(start: new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00'))],
+            extra: [],
+        );
+
+        $output = json_decode((new JsonFormatter())->format($record), true);
+
+        self::assertSame('2026-06-21T11:59:59.250000+00:00', $output['context'][0]['event']['start']);
     }
 
     public function testCustomEcsFieldUsingTheTraitAlsoSerialises(): void
