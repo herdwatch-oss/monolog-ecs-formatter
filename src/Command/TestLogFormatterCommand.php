@@ -8,6 +8,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
 use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\EventOutcome;
 use Herdwatch\MonologEcsFormatter\Ecs\Host;
 use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
@@ -79,18 +80,26 @@ class TestLogFormatterCommand extends Command
 
         // 5b. Standard ECS runtime / request context.
         $this->logger->info('Inbound API request.', [
-            new Http(statusCode: 200, method: 'POST'),
+            new Http(
+                statusCode: 200,
+                method: 'POST',
+                requestBodyBytes: random_int(64, 4096),
+                responseBodyBytes: random_int(64, 8192),
+                requestMimeType: 'application/json',
+                responseMimeType: 'application/json',
+            ),
             new Process(pid: getmypid() ?: null, commandLine: 'bin/console monolog-ecs:test'),
             new Client(ip: '203.0.113.' . random_int(1, 254)),
             new UserAgent(device: 'iPhone', version: '4.2.1'),
             new Host(name: gethostname() ?: 'localhost'),
             Url::parse('https://app.herdwatch.com/herds/' . random_int(100, 999) . '?view=summary'),
-            new Event(action: 'api.request', start: new \DateTimeImmutable()),
+            new Event(action: 'api.request', start: new \DateTimeImmutable(), outcome: EventOutcome::Success),
         ]);
 
         // 6. Exceptions via EcsError (captures error.type, message, code, stack_trace).
         $this->logger->error('Sync failed.', [
             new EcsError(new \RuntimeException('Upstream timed out', 504)),
+            new Event(action: 'farm.sync', outcome: EventOutcome::Failure),
         ]);
 
         // 7. Building a bag from an existing array (the escape hatch — still validated/coerced).

@@ -100,7 +100,8 @@ class StandardEcsTypesTest extends TestCase
 
     public function testEventOutcomeEnumCoversTheEcsAllowedValues(): void
     {
-        self::assertSame(['success', 'failure', 'unknown'], array_map(
+        // The ECS-mandated closed set, regardless of declaration order.
+        self::assertEqualsCanonicalizing(['success', 'failure', 'unknown'], array_map(
             static fn (EventOutcome $o): string => $o->value,
             EventOutcome::cases(),
         ));

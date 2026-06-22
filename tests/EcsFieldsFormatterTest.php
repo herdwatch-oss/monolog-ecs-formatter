@@ -8,6 +8,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsError;
 use Herdwatch\MonologEcsFormatter\Ecs\EcsField;
 use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\EventOutcome;
 use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Labels;
 use Herdwatch\MonologEcsFormatter\Ecs\Metrics;
@@ -734,20 +735,27 @@ class EcsFieldsFormatterTest extends TestCase
             new Http(requestBodyBytes: 12, responseBodyBytes: 340, requestMimeType: 'application/json'),
         ]));
 
-        self::assertSame(
+        // Canonicalising: the point is that nothing is clobbered — key order is incidental and
+        // depends on which Http object is listed first.
+        self::assertEqualsCanonicalizing(
             ['method' => 'POST', 'body' => ['bytes' => 12], 'mime_type' => 'application/json'],
             $output['http']['request'],
         );
-        self::assertSame(['status_code' => 200, 'body' => ['bytes' => 340]], $output['http']['response']);
+        self::assertEqualsCanonicalizing(['status_code' => 200, 'body' => ['bytes' => 340]], $output['http']['response']);
     }
 
     public function testEventFragmentMergesWithBaseEventAndFormatsStart(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
-            new Event(action: 'farm.sync', start: new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00')),
+            new Event(
+                action: 'farm.sync',
+                start: new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00'),
+                outcome: EventOutcome::Failure,
+            ),
         ]));
 
         self::assertSame('farm.sync', $output['event']['action']);
+        self::assertSame('failure', $output['event']['outcome']);       // survives the base-event merge
         self::assertSame('event', $output['event']['kind']);            // base preserved
         self::assertSame('symfony.logs', $output['event']['dataset']);  // base preserved
         self::assertSame('2026-06-21T11:59:59.250000+00:00', $output['event']['start']);
