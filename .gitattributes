@@ -3,6 +3,7 @@
 
 # Exclude dev-only files from the Composer dist tarball
 /tests                  export-ignore
+/recipe                 export-ignore
 /.github                export-ignore
 /.php-cs-fixer.dist.php  export-ignore
 /phpstan.dist.neon      export-ignore

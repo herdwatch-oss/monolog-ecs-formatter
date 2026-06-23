@@ -217,6 +217,8 @@ ECS fields are promoted to top-level; everything else stays under `context`/`ext
 
 A non-destructive transition mode: the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`) are kept **and** each governed namespace is mirrored under `context.<namespace>` (the full, uncapped payload), so dashboards querying the old `context.*` paths keep working while you migrate them to the promoted top-level fields.
 
+Use `copy` **only while migrating** existing dashboards and queries off the old structure — it duplicates fields, which costs storage and can muddy your Elasticsearch mapping. Switch back to `move` (the default) once nothing depends on the legacy paths.
+
 ## Wiring the formatter in `monolog.yaml`
 
 ```yaml

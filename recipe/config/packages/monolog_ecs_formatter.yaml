@@ -1,0 +1,19 @@
+monolog_ecs_formatter:
+    # "move" (default) relocates fields to ECS top-level and drops originals;
+    # "copy" adds ECS fields and retains all original fields.
+    mode: move
+
+    # All settings below are optional — uncomment to enable.
+
+    # Enables the EcsIdentityProcessor, which stamps service.* on every record.
+    #service_name: '%env(default::APP_NAME)%'
+
+    # service.version on every record (requires service_name).
+    #service_version: '%env(APP_VERSION)%'
+
+    # service.environment on every record (requires service_name).
+    #service_environment: '%env(APP_ENV)%'
+
+    # Value advertised in ecs.version. Defaults to the ECS schema this
+    # formatter targets; set it to match your Elasticsearch index template.
+    #ecs_version: '8.11.0'
