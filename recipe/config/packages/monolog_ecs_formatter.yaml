@@ -1,7 +1,8 @@
 monolog_ecs_formatter:
-    # "move" (default) emits a clean ECS-only shape; "copy" additionally keeps the
-    # legacy top-level keys (channel, level_name, level, datetime) during migration.
-    mode: move
+    # "copy" (default) keeps the legacy top-level keys (channel, level_name, level,
+    # datetime) so existing dashboards keep working during migration; switch to
+    # "move" for a clean ECS-only shape once nothing depends on them.
+    mode: copy
 
     # All settings below are optional — uncomment to enable.
 

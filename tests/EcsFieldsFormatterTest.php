@@ -21,6 +21,7 @@ use Herdwatch\MonologEcsFormatter\Ecs\Tracing;
 use Herdwatch\MonologEcsFormatter\Ecs\Url;
 use Herdwatch\MonologEcsFormatter\Ecs\User;
 use Herdwatch\MonologEcsFormatter\Formatter\EcsFieldsFormatter;
+use Herdwatch\MonologEcsFormatter\Formatter\EcsFormatMode;
 use Herdwatch\MonologEcsFormatter\Processor\EcsIdentityProcessor;
 use Monolog\Level;
 use Monolog\LogRecord;
@@ -32,7 +33,9 @@ class EcsFieldsFormatterTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->formatter = new EcsFieldsFormatter();
+        // This suite asserts the clean ECS-only shape, so it pins move explicitly; copy (the default)
+        // is covered by EcsFieldsFormatterCopyModeTest.
+        $this->formatter = new EcsFieldsFormatter(EcsFormatMode::Move);
     }
 
     /**
@@ -92,7 +95,7 @@ class EcsFieldsFormatterTest extends TestCase
     public function testEcsVersionIsConfigurable(): void
     {
         $output = json_decode(
-            (new EcsFieldsFormatter(ecsVersion: '9.0.0'))->format($this->createRecord()),
+            (new EcsFieldsFormatter(mode: EcsFormatMode::Move, ecsVersion: '9.0.0'))->format($this->createRecord()),
             true,
         );
 
@@ -699,7 +702,7 @@ class EcsFieldsFormatterTest extends TestCase
 
     public function testAppendNewlineFalseOmitsTrailingNewline(): void
     {
-        $formatter = new EcsFieldsFormatter(appendNewline: false);
+        $formatter = new EcsFieldsFormatter(mode: EcsFormatMode::Move, appendNewline: false);
 
         self::assertStringEndsNotWith("\n", $formatter->format($this->createRecord()));
         self::assertStringEndsNotWith("\n", $formatter->formatBatch([$this->createRecord(), $this->createRecord()]));

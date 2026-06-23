@@ -1,6 +1,6 @@
 {
     "name": "herdwatch-oss/monolog-ecs-formatter",
-    "description": "Monolog formatter and Symfony bundle that promotes typed ECS value objects (metrics, labels, text, tags, service, user, tracing, error) to top-level ECS-aligned JSON fields for clean Elasticsearch mapping, with copy/move modes for non-destructive migration.",
+    "description": "Monolog formatter and Symfony bundle that promotes typed ECS value objects (metrics, labels, text, tags, service, user, tracing, error) to top-level ECS-aligned JSON fields for clean Elasticsearch mapping, with a default copy mode that also keeps the legacy Monolog top-level keys (channel, level_name, level, datetime) so existing dashboards keep working during migration.",
     "type": "symfony-bundle",
     "license": "MIT",
     "keywords": ["monolog", "ecs", "elasticsearch", "logging", "symfony", "formatter"],

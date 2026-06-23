@@ -29,9 +29,10 @@ use Monolog\LogRecord;
  * (e.g. `metric.bad key`).
  *
  * The {@see EcsFormatMode} `mode` controls one thing only: whether the legacy Monolog top-level keys
- * (channel, level_name, level, datetime) are also emitted. Move (the default) drops them for a clean
- * ECS-only shape; Copy keeps them so dashboards querying the old keys keep working during migration.
- * Promotion of namespaces and identity fields is identical in both modes.
+ * (channel, level_name, level, datetime) are also emitted. Copy (the default) keeps them, so dashboards
+ * querying the old keys keep working when the bundle is dropped into an existing app; Move drops them
+ * for a clean ECS-only shape once migration is complete. Promotion of namespaces and identity fields
+ * is identical in both modes.
  *
  * A contributed fragment can never overwrite the base ECS skeleton (@timestamp, log.level, message,
  * ecs.version), whether expressed as a top-level dotted key or nested — a nested `log.level` or
@@ -77,7 +78,7 @@ class EcsFieldsFormatter extends JsonFormatter
     private const array RESERVED_BUCKETS = ['context', 'extra'];
 
     public function __construct(
-        private readonly EcsFormatMode $mode = EcsFormatMode::Move,
+        private readonly EcsFormatMode $mode = EcsFormatMode::Copy,
         private readonly string $ecsVersion = self::DEFAULT_ECS_VERSION,
         bool $appendNewline = true,
         bool $includeStacktraces = false,

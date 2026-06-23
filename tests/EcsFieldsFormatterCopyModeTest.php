@@ -235,13 +235,14 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertArrayHasKey('service', $output);
     }
 
-    public function testDefaultConstructorIsMoveMode(): void
+    public function testDefaultConstructorIsCopyMode(): void
     {
-        $move = new EcsFieldsFormatter();
-        $output = json_decode($move->format($this->createRecord(level: Level::Warning)), true);
+        $default = new EcsFieldsFormatter();
+        $output = json_decode($default->format($this->createRecord(level: Level::Warning)), true);
 
-        self::assertArrayNotHasKey('channel', $output);
-        self::assertArrayNotHasKey('level_name', $output);
+        // Copy is the default: the legacy top-level keys ride along out of the box.
+        self::assertArrayHasKey('channel', $output);
+        self::assertArrayHasKey('level_name', $output);
         self::assertArrayHasKey('event', $output);
     }
 }

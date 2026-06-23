@@ -46,7 +46,7 @@ Create `config/packages/monolog_ecs_formatter.yaml`:
 
 ```yaml
 monolog_ecs_formatter:
-    mode: move                          # "move" (default) or "copy" — see Modes below
+    mode: copy                          # "copy" (default) or "move" — see Modes below
     service_name: my-service            # optional; enables the EcsIdentityProcessor when set
     service_version: '%env(APP_VERSION)%'   # optional; service.version on every record (requires service_name)
     service_environment: '%env(APP_ENV)%'   # optional; service.environment on every record (requires service_name)
@@ -209,15 +209,13 @@ The optional `service_version` and `service_environment` keys ride along on that
 
 The mode controls **one thing only**: whether the legacy Monolog top-level keys (`channel`, `level_name`, `level`, `datetime`) are emitted alongside the ECS fields. Promotion of ECS fields and the never-drop handling of un-promotable entries are identical in both modes.
 
-### `move` (default)
+### `copy` (default)
 
-ECS fields are promoted to top-level; everything else stays under `context`/`extra`. No legacy top-level keys. Use this for a clean ECS-only shape.
+ECS fields are promoted to top-level **and** the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`) are kept. This is the default because the bundle is normally installed into an existing application: dashboards still querying the old keys keep working while you migrate them to the ECS fields (`log.logger`, `log.level`, `event.severity`, `@timestamp`).
 
-### `copy`
+### `move`
 
-Same output as `move`, **plus** the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`), so dashboards still querying those keys keep working while you migrate them to the ECS fields (`log.logger`, `log.level`, `event.severity`, `@timestamp`).
-
-Use `copy` **only while migrating** — the duplicated base keys cost storage and can muddy your Elasticsearch mapping. Switch back to `move` (the default) once nothing depends on the legacy keys.
+The clean ECS-only shape: ECS fields are promoted to top-level, everything else stays under `context`/`extra`, and **no** legacy top-level keys are emitted. Switch to `move` once nothing depends on the legacy keys — the duplicated base keys in `copy` cost storage and can muddy your Elasticsearch mapping.
 
 ## Wiring the formatter in `monolog.yaml`
 
