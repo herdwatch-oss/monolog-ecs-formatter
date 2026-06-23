@@ -49,6 +49,27 @@ class EcsIdentityProcessorTest extends TestCase
         self::assertSame('my-other-service', $result->extra['service']->toEcs()['service']['name']);
     }
 
+    public function testVersionAndEnvironmentAreInjectedWhenProvided(): void
+    {
+        $result = (new EcsIdentityProcessor('my-service', version: '1.4.0', environment: 'prod'))(
+            $this->createRecord(),
+        );
+
+        self::assertSame(
+            ['service' => ['name' => 'my-service', 'language' => 'php', 'version' => '1.4.0', 'environment' => 'prod']],
+            $result->extra['service']->toEcs(),
+        );
+    }
+
+    public function testVersionAndEnvironmentOmittedWhenNotProvided(): void
+    {
+        // Default null must not emit empty service.version/service.environment fields.
+        $service = (new EcsIdentityProcessor('my-service'))($this->createRecord())->extra['service'];
+
+        self::assertArrayNotHasKey('version', $service->toEcs()['service']);
+        self::assertArrayNotHasKey('environment', $service->toEcs()['service']);
+    }
+
     public function testProcessorDoesNotHandleExceptions(): void
     {
         // Exception → error.* is the formatter's job; the identity processor must not touch it.

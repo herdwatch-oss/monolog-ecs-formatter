@@ -27,6 +27,14 @@ class MonologEcsFormatterBundle extends AbstractBundle
                     ->defaultNull()
                     ->info('Service name for the ECS service.name field (e.g. "my-service"). When set, the EcsIdentityProcessor is registered and adds service.* fields.')
                 ->end()
+                ->scalarNode('service_version')
+                    ->defaultNull()
+                    ->info('Value for the ECS service.version field (e.g. "1.4.0" or "%env(APP_VERSION)%"). Requires service_name; appended to every record via the EcsIdentityProcessor.')
+                ->end()
+                ->scalarNode('service_environment')
+                    ->defaultNull()
+                    ->info('Value for the ECS service.environment field (e.g. "production" or "%env(APP_ENV)%"). Requires service_name; appended to every record via the EcsIdentityProcessor.')
+                ->end()
                 ->scalarNode('ecs_version')
                     ->defaultNull()
                     // Reject anything that would emit a blank/garbage ecs.version: empty string,
@@ -38,6 +46,13 @@ class MonologEcsFormatterBundle extends AbstractBundle
                     ->end()
                     ->info('Value advertised in the ecs.version field. Defaults to the ECS schema version this formatter targets; set it to match the ECS schema your custom EcsField types / Elasticsearch index template use.')
                 ->end()
+            ->end()
+            // service.version/environment only ride along when the EcsIdentityProcessor is
+            // registered, which needs service_name. Without it they would silently vanish, so fail fast.
+            ->validate()
+                ->ifTrue(static fn (array $c): bool => $c['service_name'] === null
+                    && ($c['service_version'] !== null || $c['service_environment'] !== null))
+                ->thenInvalid('monolog_ecs_formatter.service_version/service_environment require service_name to be set.')
             ->end()
         ;
     }
@@ -58,10 +73,20 @@ class MonologEcsFormatterBundle extends AbstractBundle
         }
 
         if ($config['service_name'] !== null) {
-            $container->services()
+            $processor = $container->services()
                 ->set(EcsIdentityProcessor::class)
                 ->arg('$serviceName', $config['service_name'])
                 ->tag('monolog.processor');
+
+            // Validation above guarantees these are only set alongside service_name. Each defaults to
+            // null on the processor, so only override when actually configured.
+            if ($config['service_version'] !== null) {
+                $processor->arg('$version', $config['service_version']);
+            }
+
+            if ($config['service_environment'] !== null) {
+                $processor->arg('$environment', $config['service_environment']);
+            }
         }
 
         $env = $container->env();

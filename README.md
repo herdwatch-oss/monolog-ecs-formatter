@@ -46,9 +46,11 @@ Create `config/packages/monolog_ecs_formatter.yaml`:
 
 ```yaml
 monolog_ecs_formatter:
-    mode: move                  # "move" (default) or "copy" — see Modes below
-    service_name: my-service    # optional; enables the EcsIdentityProcessor when set
-    ecs_version: '8.11.0'       # optional; value advertised in ecs.version (defaults to the ECS schema this formatter targets)
+    mode: move                          # "move" (default) or "copy" — see Modes below
+    service_name: my-service            # optional; enables the EcsIdentityProcessor when set
+    service_version: '%env(APP_VERSION)%'   # optional; service.version on every record (requires service_name)
+    service_environment: '%env(APP_ENV)%'   # optional; service.environment on every record (requires service_name)
+    ecs_version: '8.11.0'               # optional; value advertised in ecs.version (defaults to the ECS schema this formatter targets)
 ```
 
 ## Passing fields
@@ -202,6 +204,8 @@ A `\Throwable` at `context['exception']` (the Monolog convention) is promoted to
 ## Service identity processor (`service.*`)
 
 When `service_name` is configured, `EcsIdentityProcessor` is registered as a global Monolog processor and injects a `Service` object into every record, which the formatter promotes to `service.*`. Omitting `service_name` disables it. The processor does **not** handle exceptions — that is the formatter's job (see above).
+
+The optional `service_version` and `service_environment` keys ride along on that injected `Service`, so every record carries `service.version` and `service.environment` (bind them to `%env(APP_VERSION)%` / `%env(APP_ENV)%` to track deploys per environment). Both require `service_name` — setting either without it is a configuration error. A `Service` set explicitly at the call site still wins (the processor only fills the gap).
 
 ## Modes
 
