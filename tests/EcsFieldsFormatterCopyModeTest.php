@@ -17,10 +17,11 @@ use Monolog\LogRecord;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Copy mode = move mode + (a) legacy top-level keys (channel, level_name, level, datetime) are kept,
- * and (b) the full payload of each governed namespace is mirrored under context.<namespace> for
- * dashboard compatibility during migration. Identity fields (service, error, ...) are promoted to
- * top-level only.
+ * Copy mode differs from move mode in exactly one way: the legacy Monolog top-level keys
+ * (channel, level_name, level, datetime) are kept, so dashboards querying the old keys keep working
+ * during migration. Everything else — namespace promotion, the never-drop demotion of over-cap/invalid
+ * entries as dotted keys, identity-field promotion, and exception consumption — is identical to move:
+ * promoted values are NOT mirrored under context.<namespace>.
  */
 class EcsFieldsFormatterCopyModeTest extends TestCase
 {
@@ -82,7 +83,7 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame('event', $output['event']['kind']);
     }
 
-    public function testLabelsPromotedAndMirroredUnderContext(): void
+    public function testLabelsPromotedNotMirrored(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
             Labels::create()->add('env', 'prod'),
@@ -90,11 +91,12 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         ]));
 
         self::assertSame(['env' => 'prod'], $output['labels']);
+        // Plain context is retained; the promoted namespace is NOT mirrored under context.
         self::assertSame(42, $output['context']['farm_id']);
-        self::assertSame(['env' => 'prod'], $output['context']['labels']);
+        self::assertArrayNotHasKey('labels', $output['context']);
     }
 
-    public function testMetricPromotedAndMirroredUnderContext(): void
+    public function testMetricPromotedNotMirrored(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
             Metrics::create()->gauge('duration_ms', 150.0),
@@ -103,28 +105,29 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
 
         self::assertSame(150.0, $output['metric']['duration_ms']);
         self::assertSame('req-abc', $output['context']['request_id']);
-        self::assertSame(['duration_ms' => 150.0], $output['context']['metric']);
+        self::assertArrayNotHasKey('metric', $output['context']);
     }
 
-    public function testTagsPromotedAndMirroredUnderContext(): void
+    public function testTagsPromotedNotMirrored(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [Tags::of('web', 'api')]));
 
         self::assertSame(['web', 'api'], $output['tags']);
-        self::assertSame(['web', 'api'], $output['context']['tags']);
+        // Nothing left over — no context bucket is emitted.
+        self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testTextPromotedAndMirroredUnderContext(): void
+    public function testTextPromotedNotMirrored(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
             Text::create()->add('note', 'Sync completed'),
         ]));
 
         self::assertSame(['note' => 'Sync completed'], $output['text']);
-        self::assertSame(['note' => 'Sync completed'], $output['context']['text']);
+        self::assertArrayNotHasKey('context', $output);
     }
 
-    public function testFullPayloadMirroredEvenWhenTopLevelIsCapped(): void
+    public function testOverCapEntriesDemotedAsDottedKeys(): void
     {
         $labels = Labels::create();
         for ($i = 1; $i <= 10; $i++) {
@@ -133,9 +136,12 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
 
         $output = $this->formatAndDecode($this->createRecord(context: [$labels]));
 
-        // Top-level promotes the capped subset; the full original is mirrored under context.
+        // Top-level promotes the capped subset; the over-cap entries are never dropped — they are
+        // demoted as dotted keys, not mirrored as a nested context.labels array.
         self::assertCount(8, $output['labels']);
-        self::assertCount(10, $output['context']['labels']);
+        self::assertSame('val9', $output['context']['labels.key9']);
+        self::assertSame('val10', $output['context']['labels.key10']);
+        self::assertArrayNotHasKey('labels', $output['context']);
     }
 
     public function testExtraEmittedVerbatimInCopyMode(): void
@@ -172,7 +178,7 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame('RuntimeException', $output['error']['type']);
     }
 
-    public function testContextExceptionPromotedAndKeptInContext(): void
+    public function testContextExceptionPromotedAndRemoved(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
             'exception' => new \RuntimeException('db down'),
@@ -181,9 +187,8 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         // Promoted to top-level error.*
         self::assertSame('RuntimeException', $output['error']['type']);
         self::assertSame('db down', $output['error']['message']);
-        // Copy mode keeps the original exception under context (Monolog-normalised) for compatibility.
-        self::assertArrayHasKey('exception', $output['context']);
-        self::assertSame('db down', $output['context']['exception']['message']);
+        // The raw exception now lives, typed, under error.* — it is dropped from context (same as move).
+        self::assertArrayNotHasKey('context', $output);
     }
 
     public function testServiceContextWinsOverExtra(): void
@@ -197,16 +202,18 @@ class EcsFieldsFormatterCopyModeTest extends TestCase
         self::assertSame('php', $output['service']['language']);
     }
 
-    public function testPlainContextNamespaceArrayIsMergedWithBagNotOverwritten(): void
+    public function testPlainContextNamespaceRetainedAlongsidePromotedBag(): void
     {
         $output = $this->formatAndDecode($this->createRecord(context: [
             'metric' => ['hand_written' => 9],
             Metrics::create()->gauge('dur_ms', 1.5),
         ]));
 
-        // Copy mode keeps both the legacy hand-written metric AND the promoted bag value.
+        // The bag value is promoted to top-level; the plain-context 'metric' is retained as-is and
+        // the promoted value is NOT merged back into it.
+        self::assertSame(1.5, $output['metric']['dur_ms']);
         self::assertSame(9, $output['context']['metric']['hand_written']);
-        self::assertSame(1.5, $output['context']['metric']['dur_ms']);
+        self::assertArrayNotHasKey('dur_ms', $output['context']['metric']);
     }
 
     public function testOutputIsSingleLineNdjson(): void

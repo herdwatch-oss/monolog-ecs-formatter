@@ -1,6 +1,6 @@
 monolog_ecs_formatter:
-    # "move" (default) relocates fields to ECS top-level and drops originals;
-    # "copy" adds ECS fields and retains all original fields.
+    # "move" (default) emits a clean ECS-only shape; "copy" additionally keeps the
+    # legacy top-level keys (channel, level_name, level, datetime) during migration.
     mode: move
 
     # All settings below are optional — uncomment to enable.

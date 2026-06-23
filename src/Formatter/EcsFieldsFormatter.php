@@ -19,15 +19,19 @@ use Monolog\LogRecord;
  * `instanceof` in the raw context/extra — the array key is irrelevant, so they may be passed
  * positionally or under any key. Ordinary (non-EcsField) context flows, un-promoted, into a
  * leftover `context` object; `extra` is emitted verbatim. A `\Throwable` at `context['exception']`
- * (the Monolog convention) is promoted to `error.*` and removed from `context` in move mode (kept in
- * copy mode) — unless an explicit `EcsError` already owns `error.*`, in which case the throwable is
- * left in `context` (never dropped, never double-promoted) in both modes.
+ * (the Monolog convention) is promoted to `error.*` and removed from `context` — unless an explicit
+ * `EcsError` already owns `error.*`, in which case the throwable is left in `context` (never dropped,
+ * never double-promoted).
  *
  * Governed namespaces (labels, metric, text, tags) get key-name validation and a per-namespace cap
- * regardless of which EcsField produced them. Anything that can't be promoted is never dropped:
- *   - Move (default): demoted into the leftover `context` with a dotted key (e.g. `metric.bad key`).
- *   - Copy: the full original payload is mirrored under `context.<namespace>` for dashboard
- *     compatibility, and the legacy top-level keys (channel, level_name, level, datetime) are kept.
+ * regardless of which EcsField produced them, and are always promoted to top-level. Anything that
+ * can't be promoted is never dropped: it is demoted into the leftover `context` with a dotted key
+ * (e.g. `metric.bad key`).
+ *
+ * The {@see EcsFormatMode} `mode` controls one thing only: whether the legacy Monolog top-level keys
+ * (channel, level_name, level, datetime) are also emitted. Move (the default) drops them for a clean
+ * ECS-only shape; Copy keeps them so dashboards querying the old keys keep working during migration.
+ * Promotion of namespaces and identity fields is identical in both modes.
  *
  * A contributed fragment can never overwrite the base ECS skeleton (@timestamp, log.level, message,
  * ecs.version), whether expressed as a top-level dotted key or nested — a nested `log.level` or
@@ -158,9 +162,8 @@ class EcsFieldsFormatter extends JsonFormatter
     /**
      * Promote a \Throwable at context['exception'] (the Monolog convention) to error.* via EcsError.
      * When an explicit EcsError (from a bag) already owns error.*, the throwable is left untouched in
-     * context — never dropped, never double-promoted — in both modes. Otherwise it is promoted, and
-     * in move mode the consumed exception is removed from the leftover context; in copy mode it is
-     * kept (Monolog-normalised) for dashboard compatibility.
+     * context — never dropped, never double-promoted. Otherwise it is promoted to error.* and the
+     * consumed exception is removed from the leftover context (it now lives, typed, under error.*).
      *
      * @param array<array-key, mixed> $context   modified by reference
      * @param array<string, mixed>    $fragments modified by reference
@@ -184,9 +187,8 @@ class EcsFieldsFormatter extends JsonFormatter
             $fragments[$field] = $payload;
         }
 
-        if ($this->mode === EcsFormatMode::Move) {
-            unset($context['exception']);
-        }
+        // The exception now lives, typed, under error.* — drop the raw copy regardless of mode.
+        unset($context['exception']);
     }
 
     /**
@@ -211,7 +213,7 @@ class EcsFieldsFormatter extends JsonFormatter
                     $output['tags'] = $promoted;
                 }
 
-                $this->placeLeftover('tags', $value, $rejected, $leftover);
+                $this->placeLeftover('tags', $rejected, $leftover);
             } elseif (isset(self::GOVERNED[$field])) {
                 if (!is_array($value)) {
                     $this->demoteValue($field, $value, $leftover); // malformed payload — never drop
@@ -224,7 +226,7 @@ class EcsFieldsFormatter extends JsonFormatter
                     $output[$field] = $promoted;
                 }
 
-                $this->placeLeftover($field, $value, $rejected, $leftover);
+                $this->placeLeftover($field, $rejected, $leftover);
             } elseif (in_array($field, self::RESERVED_BUCKETS, true) || in_array($field, self::PROTECTED_SCALARS, true)) {
                 // Reserved buckets (context, extra) are not ECS fields, and the base owns the
                 // protected scalars — neither may become a top-level field. Demote so the value is
@@ -312,25 +314,15 @@ class EcsFieldsFormatter extends JsonFormatter
     }
 
     /**
-     * Never-drop policy for what couldn't be promoted.
-     *   - Copy: mirror the full original payload under context.<namespace>, merged with any
-     *     pre-existing plain-context value of the same name (never overwriting it).
-     *   - Move: keep only the rejected entries — governed namespaces as dotted keys, tags as a list.
+     * Never-drop policy for what couldn't be promoted: keep only the rejected entries in the leftover
+     * context — governed namespaces as dotted keys (e.g. `metric.bad key`), tags merged into a list.
+     * Promoted entries are not duplicated under context; promotion is identical in both modes.
      *
-     * @param mixed                $full     the complete fragment payload for this namespace
      * @param array<array-key, mixed> $rejected entries that were not promoted
      * @param array<string, mixed> $leftover modified by reference
      */
-    private function placeLeftover(string $namespace, mixed $full, array $rejected, array &$leftover): void
+    private function placeLeftover(string $namespace, array $rejected, array &$leftover): void
     {
-        if ($this->mode === EcsFormatMode::Copy) {
-            if (is_array($full) && $full !== []) {
-                $leftover[$namespace] = $this->deepMerge($leftover[$namespace] ?? [], $full);
-            }
-
-            return;
-        }
-
         if ($rejected === []) {
             return;
         }

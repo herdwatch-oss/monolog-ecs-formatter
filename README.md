@@ -100,9 +100,7 @@ Reserve string keys for the two cases where the key genuinely matters:
 
 Keys must match `/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){0,2}$/` (lower snake_case, ≤ 3 segments).
 
-**Nothing is ever dropped.** A key that fails validation or exceeds the cap is preserved:
-- **Move mode:** demoted into the leftover `context` with a dotted key — e.g. `Labels::create()->add('Bad Key', 'x')` ends up as `"context": {"labels.Bad Key": "x"}`.
-- **Copy mode:** the full original payload is mirrored under `context.<namespace>` (see Modes).
+**Nothing is ever dropped.** A key that fails validation or exceeds the cap is demoted into the leftover `context` with a dotted key — e.g. `Labels::create()->add('Bad Key', 'x')` ends up as `"context": {"labels.Bad Key": "x"}`. This is identical in both modes; the mode only governs the legacy base keys (see [Modes](#modes)).
 
 ### Building a bag from an array
 
@@ -199,7 +197,7 @@ To apply a custom field to **every** record, inject it from a Monolog processor 
 
 ## Exceptions
 
-A `\Throwable` at `context['exception']` (the Monolog convention) is promoted to `error.*` by the **formatter** automatically — no processor or configuration required. So existing `$log->error($msg, ['exception' => $e])` call sites get `error.{type,message,code,stack_trace}` for free. In move mode the consumed exception is then removed from the leftover context; in copy mode it is kept (Monolog-normalised) for dashboard compatibility. An explicit `new EcsError($e)` always takes precedence.
+A `\Throwable` at `context['exception']` (the Monolog convention) is promoted to `error.*` by the **formatter** automatically — no processor or configuration required. So existing `$log->error($msg, ['exception' => $e])` call sites get `error.{type,message,code,stack_trace}` for free. The consumed exception is then removed from the leftover context (in both modes — it now lives, typed, under `error.*`). An explicit `new EcsError($e)` always takes precedence.
 
 ## Service identity processor (`service.*`)
 
@@ -209,15 +207,17 @@ The optional `service_version` and `service_environment` keys ride along on that
 
 ## Modes
 
+The mode controls **one thing only**: whether the legacy Monolog top-level keys (`channel`, `level_name`, `level`, `datetime`) are emitted alongside the ECS fields. Promotion of ECS fields and the never-drop handling of un-promotable entries are identical in both modes.
+
 ### `move` (default)
 
 ECS fields are promoted to top-level; everything else stays under `context`/`extra`. No legacy top-level keys. Use this for a clean ECS-only shape.
 
 ### `copy`
 
-A non-destructive transition mode: the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`) are kept **and** each governed namespace is mirrored under `context.<namespace>` (the full, uncapped payload), so dashboards querying the old `context.*` paths keep working while you migrate them to the promoted top-level fields.
+Same output as `move`, **plus** the legacy top-level keys (`channel`, `level_name`, `level`, `datetime`), so dashboards still querying those keys keep working while you migrate them to the ECS fields (`log.logger`, `log.level`, `event.severity`, `@timestamp`).
 
-Use `copy` **only while migrating** existing dashboards and queries off the old structure — it duplicates fields, which costs storage and can muddy your Elasticsearch mapping. Switch back to `move` (the default) once nothing depends on the legacy paths.
+Use `copy` **only while migrating** — the duplicated base keys cost storage and can muddy your Elasticsearch mapping. Switch back to `move` (the default) once nothing depends on the legacy keys.
 
 ## Wiring the formatter in `monolog.yaml`
 
