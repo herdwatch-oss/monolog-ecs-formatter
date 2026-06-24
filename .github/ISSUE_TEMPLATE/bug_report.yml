@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a problem with the formatter or bundle
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal log call + configuration that triggers the issue.
+      render: php
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Package version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: PHP / Symfony / Monolog versions
+      placeholder: e.g. PHP 8.3, Symfony 7.2, Monolog 3.7
+    validations:
+      required: true

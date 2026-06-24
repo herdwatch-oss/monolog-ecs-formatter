@@ -1,0 +1,9 @@
+{
+    "bundles": {
+        "Herdwatch\\MonologEcsFormatter\\MonologEcsFormatterBundle": ["all"]
+    },
+    "copy-from-recipe": {
+        "config/": "%CONFIG_DIR%/"
+    },
+    "aliases": ["ecs-formatter", "monolog-ecs"]
+}
