@@ -136,7 +136,7 @@ Bundled value objects for common runtime / request / host fields, so each servic
 | `Client` | `client.ip`, `client.port` |
 | `UserAgent` | `user_agent.original`, `user_agent.version`, `user_agent.device.name` |
 | `Host` | `host.name`, `host.ip` |
-| `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds), `event.outcome` (the `EventOutcome` enum: success/failure/unknown), `event.reason` (short, low-cardinality reason for the outcome, e.g. `timeout`) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
+| `Event` | `event.action`, `event.start`/`event.end`, `event.duration` (nanoseconds), `event.sequence` (monotonic ordering number), `event.outcome` (the `EventOutcome` enum: success/failure/unknown), `event.reason` (short, low-cardinality reason for the outcome, e.g. `timeout`), `event.type`/`event.category` (the `EventType`/`EventCategory` closed-set enums, emitted as de-duplicated arrays), `event.url` (link to an external system to continue investigation) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
 | `Url` | `url.full`, `url.scheme`, `url.domain`, `url.port`, `url.path`, `url.query`, `url.fragment` — pass parts by name, or use `Url::parse($url)` to split a URL string |
 
 ```php

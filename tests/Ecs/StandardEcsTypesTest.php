@@ -6,7 +6,9 @@ namespace Herdwatch\MonologEcsFormatter\Tests\Ecs;
 
 use Herdwatch\MonologEcsFormatter\Ecs\Client;
 use Herdwatch\MonologEcsFormatter\Ecs\Event;
+use Herdwatch\MonologEcsFormatter\Ecs\EventCategory;
 use Herdwatch\MonologEcsFormatter\Ecs\EventOutcome;
+use Herdwatch\MonologEcsFormatter\Ecs\EventType;
 use Herdwatch\MonologEcsFormatter\Ecs\Host;
 use Herdwatch\MonologEcsFormatter\Ecs\Http;
 use Herdwatch\MonologEcsFormatter\Ecs\Process;
@@ -114,6 +116,89 @@ class StandardEcsTypesTest extends TestCase
             static fn (EventOutcome $o): string => $o->value,
             EventOutcome::cases(),
         ));
+    }
+
+    public function testEventEndSequenceAndUrl(): void
+    {
+        self::assertSame(
+            ['event' => [
+                'end' => '2026-06-21T12:00:00.500000+00:00',
+                'sequence' => 42,
+                'url' => 'https://sync.example.test/reports?run=abc',
+            ]],
+            (new Event(
+                end: new \DateTimeImmutable('2026-06-21T12:00:00.500000+00:00'),
+                sequence: 42,
+                url: 'https://sync.example.test/reports?run=abc',
+            ))->toEcs(),
+        );
+    }
+
+    public function testEventTypeAndCategoryEmitAsValueArrays(): void
+    {
+        self::assertSame(
+            ['event' => ['type' => ['creation'], 'category' => ['api']]],
+            (new Event(type: [EventType::Creation], category: [EventCategory::Api]))->toEcs(),
+        );
+    }
+
+    public function testEventTypeDeduplicatesPreservingOrder(): void
+    {
+        self::assertSame(
+            ['event' => ['type' => ['start', 'end']]],
+            (new Event(type: [EventType::Start, EventType::End, EventType::Start]))->toEcs(),
+        );
+    }
+
+    public function testEventKitchenSinkFieldShape(): void
+    {
+        $start = new \DateTimeImmutable('2026-06-21T11:59:59.250000+00:00');
+        $end = new \DateTimeImmutable('2026-06-21T12:00:00.500000+00:00');
+
+        self::assertSame(
+            ['event' => [
+                'action' => 'farm-sync',
+                'start' => '2026-06-21T11:59:59.250000+00:00',
+                'end' => '2026-06-21T12:00:00.500000+00:00',
+                'duration' => 1_250_000_000,
+                'sequence' => 7,
+                'outcome' => 'failure',
+                'reason' => 'threshold',
+                'url' => 'https://sync.example.test/reports?run=abc',
+                'type' => ['change'],
+                'category' => ['api'],
+            ]],
+            (new Event(
+                action: 'farm-sync',
+                start: $start,
+                durationNanos: 1_250_000_000,
+                outcome: EventOutcome::Failure,
+                reason: 'threshold',
+                end: $end,
+                sequence: 7,
+                type: [EventType::Change],
+                category: [EventCategory::Api],
+                url: 'https://sync.example.test/reports?run=abc',
+            ))->toEcs(),
+        );
+    }
+
+    public function testEventTypeEnumCoversTheEcsAllowedValues(): void
+    {
+        // The ECS-mandated closed set, regardless of declaration order.
+        self::assertEqualsCanonicalizing(
+            ['access', 'admin', 'allowed', 'change', 'connection', 'creation', 'deletion', 'denied', 'end', 'error', 'group', 'indicator', 'info', 'installation', 'protocol', 'start', 'user'],
+            array_map(static fn (EventType $t): string => $t->value, EventType::cases()),
+        );
+    }
+
+    public function testEventCategoryEnumCoversTheEcsAllowedValues(): void
+    {
+        // The ECS-mandated closed set, regardless of declaration order.
+        self::assertEqualsCanonicalizing(
+            ['api', 'authentication', 'configuration', 'database', 'driver', 'email', 'file', 'host', 'iam', 'intrusion_detection', 'library', 'malware', 'network', 'package', 'process', 'registry', 'session', 'threat', 'vulnerability', 'web'],
+            array_map(static fn (EventCategory $c): string => $c->value, EventCategory::cases()),
+        );
     }
 
     public function testEventFormatsStartAsIso8601String(): void
