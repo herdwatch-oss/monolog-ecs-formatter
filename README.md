@@ -21,7 +21,7 @@ $log->info('Order processed', [
   "message": "Order processed",
   "ecs.version": "8.11.0",
   "log": {"logger": "app"},
-  "event": {"kind": "event", "module": "symfony", "dataset": "symfony.logs", "created": "2026-06-21T09:14:02.481139+00:00", "severity": 200},
+  "event": {"kind": "event", "module": "symfony", "dataset": "symfony.logs", "severity": 200},
   "metric": {"orders_total": 1200, "latency_ms": 12.5, "is_retry": false},
   "labels": {"tenant": "acme", "env": "prod"},
   "tags": ["billing", "reconciliation"]
@@ -193,7 +193,9 @@ To apply a custom field to **every** record, inject it from a Monolog processor 
 | `ecs.version` | configurable; defaults to `8.11.0` (the ECS schema this formatter's fields conform to — bump it if you emit fields from a newer ECS version) |
 | `log.logger` | channel name |
 | `event.kind` / `module` / `dataset` | `event` / `symfony` / `symfony.logs` |
-| `event.created` / `severity` | record datetime / Monolog level integer |
+| `event.severity` | Monolog level integer |
+
+`event.created` is deliberately not emitted: per ECS it is the agent's/pipeline's *read* time (the record's own time is `@timestamp`; datastore arrival is `event.ingested`, typically set by an ingest pipeline).
 
 ## Exceptions
 

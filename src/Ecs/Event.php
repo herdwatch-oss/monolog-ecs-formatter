@@ -7,7 +7,7 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
 /**
  * ECS `event.*` enrichment — adds action / start / end / duration / sequence / outcome / reason /
  * type / category / url alongside the base event object the formatter already emits (kind,
- * module, dataset, created, severity). Immutable; null/empty fields omitted.
+ * module, dataset, severity). Immutable; null/empty fields omitted.
  *
  * The formatter merges this additively under the base event, so it can add new sub-keys but can
  * never override the base ones. `start`/`end` accept any DateTimeInterface and are rendered to
