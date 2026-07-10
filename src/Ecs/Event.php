@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Herdwatch\MonologEcsFormatter\Ecs;
 
 /**
- * ECS `event.*` enrichment — adds action / start / duration / outcome alongside the base event
+ * ECS `event.*` enrichment — adds action / start / duration / outcome / reason alongside the base event
  * object the formatter already emits (kind, module, dataset, created, severity). Immutable; null
  * fields omitted.
  *
@@ -13,10 +13,12 @@ namespace Herdwatch\MonologEcsFormatter\Ecs;
  * never override the base ones. `start` accepts any DateTimeInterface and is rendered to an ISO-8601
  * string here (so it serialises identically through EcsFieldsFormatter and any other handler);
  * `durationNanos` is ECS `event.duration` in nanoseconds; `outcome` is the ECS `event.outcome`
- * keyword, typed as {@see EventOutcome} since ECS restricts it to success | failure | unknown.
+ * keyword, typed as {@see EventOutcome} since ECS restricts it to success | failure | unknown;
+ * `reason` is the ECS `event.reason` keyword — a short, low-cardinality description of why the
+ * outcome occurred (e.g. a failure classification like "threshold" or "timeout").
  *
  * Example:
- *   new Event(action: 'farm.sync', start: $startedAt, outcome: EventOutcome::Success);
+ *   new Event(action: 'farm.sync', outcome: EventOutcome::Failure, reason: 'threshold');
  *
  * @see https://www.elastic.co/guide/en/ecs/current/ecs-event.html
  */
@@ -32,6 +34,7 @@ final class Event implements EcsField
         private readonly ?\DateTimeInterface $start = null,
         private readonly ?int $durationNanos = null,
         private readonly ?EventOutcome $outcome = null,
+        private readonly ?string $reason = null,
     ) {
     }
 
@@ -45,6 +48,7 @@ final class Event implements EcsField
                 'start' => $this->start?->format(self::TIMESTAMP_FORMAT),
                 'duration' => $this->durationNanos,
                 'outcome' => $this->outcome?->value,
+                'reason' => $this->reason,
             ],
             static fn (string|int|null $value): bool => $value !== null,
         );

@@ -98,6 +98,15 @@ class StandardEcsTypesTest extends TestCase
         self::assertSame(['event' => ['outcome' => 'success']], (new Event(outcome: EventOutcome::Success))->toEcs());
     }
 
+    public function testEventReasonIsAddedAdditively(): void
+    {
+        self::assertSame(
+            ['event' => ['action' => 'farm.sync', 'outcome' => 'failure', 'reason' => 'threshold']],
+            (new Event(action: 'farm.sync', outcome: EventOutcome::Failure, reason: 'threshold'))->toEcs(),
+        );
+        self::assertSame(['event' => ['reason' => 'threshold']], (new Event(reason: 'threshold'))->toEcs());
+    }
+
     public function testEventOutcomeEnumCoversTheEcsAllowedValues(): void
     {
         // The ECS-mandated closed set, regardless of declaration order.
