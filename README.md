@@ -150,6 +150,8 @@ $log->info('Inbound request', [
 
 > `Url` records the URL faithfully — `url.full`/`url.query` keep whatever you pass, including any embedded credentials or query tokens/PII. Redaction is the application's job: sanitise the URL before logging it, or strip sensitive fields in a Monolog processor.
 
+> The `EventOutcome` / `EventType` / `EventCategory` enums encode the ECS **8.11** allowed-value sets — the schema this formatter targets. Newer ECS releases extend these sets additively (e.g. the `api` and `email` categories didn't exist in ECS 8.0); setting a newer `ecs_version` in config only changes the advertised `ecs.version` string — new enum cases arrive with library updates.
+
 ## Project-specific fields
 
 Any class implementing `EcsField` is detected automatically — no registration, no formatter change. `EcsField` extends `JsonSerializable`; `use SerializesToEcs` to satisfy it (it maps `jsonSerialize()` to `toEcs()`):
