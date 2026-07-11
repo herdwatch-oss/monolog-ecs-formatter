@@ -82,7 +82,9 @@ class EcsFieldsFormatterTest extends TestCase
         self::assertSame('symfony', $output['event']['module']);
         self::assertSame('symfony.logs', $output['event']['dataset']);
         self::assertSame(Level::Info->value, $output['event']['severity']);
-        self::assertArrayHasKey('created', $output['event']);
+        // event.created is the agent's read-time field per ECS — the app must not emit it
+        // (the record's own time is @timestamp; datastore arrival is event.ingested).
+        self::assertArrayNotHasKey('created', $output['event']);
     }
 
     public function testEcsVersionDefaultsToConstant(): void

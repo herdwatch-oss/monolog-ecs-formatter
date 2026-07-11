@@ -42,7 +42,9 @@ use Monolog\LogRecord;
  * `context` rather than driving the bucket.
  *
  * Base fields emitted on every record: @timestamp, log.level, message, ecs.version, log.logger,
- * event.{kind,module,dataset,created,severity}.
+ * event.{kind,module,dataset,severity}. event.created is deliberately NOT emitted: per ECS it
+ * is the agent's/pipeline's read time, not the app's record time (which is @timestamp) — see
+ * event.ingested for the datastore-arrival time, typically set by an ingest pipeline.
  */
 class EcsFieldsFormatter extends JsonFormatter
 {
@@ -360,7 +362,6 @@ class EcsFieldsFormatter extends JsonFormatter
                 'kind' => 'event',
                 'module' => 'symfony',
                 'dataset' => 'symfony.logs',
-                'created' => $datetime,
                 'severity' => $record->level->value,
             ],
         ];

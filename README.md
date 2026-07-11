@@ -21,7 +21,7 @@ $log->info('Order processed', [
   "message": "Order processed",
   "ecs.version": "8.11.0",
   "log": {"logger": "app"},
-  "event": {"kind": "event", "module": "symfony", "dataset": "symfony.logs", "created": "2026-06-21T09:14:02.481139+00:00", "severity": 200},
+  "event": {"kind": "event", "module": "symfony", "dataset": "symfony.logs", "severity": 200},
   "metric": {"orders_total": 1200, "latency_ms": 12.5, "is_retry": false},
   "labels": {"tenant": "acme", "env": "prod"},
   "tags": ["billing", "reconciliation"]
@@ -136,7 +136,7 @@ Bundled value objects for common runtime / request / host fields, so each servic
 | `Client` | `client.ip`, `client.port` |
 | `UserAgent` | `user_agent.original`, `user_agent.version`, `user_agent.device.name` |
 | `Host` | `host.name`, `host.ip` |
-| `Event` | `event.action`, `event.start`, `event.duration` (nanoseconds), `event.outcome` (the `EventOutcome` enum: success/failure/unknown) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
+| `Event` | `event.action`, `event.start`/`event.end`, `event.duration` (nanoseconds), `event.sequence` (monotonic ordering number), `event.outcome` (the `EventOutcome` enum: success/failure/unknown), `event.reason` (short, low-cardinality reason for the outcome, e.g. `timeout`), `event.type`/`event.category` (the `EventType`/`EventCategory` closed-set enums, emitted as de-duplicated arrays), `event.url` (link to an external system to continue investigation) — merged additively onto the base `event` object; it cannot override `event.kind`/`dataset`/etc. |
 | `Url` | `url.full`, `url.scheme`, `url.domain`, `url.port`, `url.path`, `url.query`, `url.fragment` — pass parts by name, or use `Url::parse($url)` to split a URL string |
 
 ```php
@@ -149,6 +149,8 @@ $log->info('Inbound request', [
 ```
 
 > `Url` records the URL faithfully — `url.full`/`url.query` keep whatever you pass, including any embedded credentials or query tokens/PII. Redaction is the application's job: sanitise the URL before logging it, or strip sensitive fields in a Monolog processor.
+
+> The `EventOutcome` / `EventType` / `EventCategory` enums encode the ECS **8.11** allowed-value sets — the schema this formatter targets. Newer ECS releases extend these sets additively (e.g. the `api` and `email` categories didn't exist in ECS 8.0); setting a newer `ecs_version` in config only changes the advertised `ecs.version` string — new enum cases arrive with library updates.
 
 ## Project-specific fields
 
@@ -193,7 +195,9 @@ To apply a custom field to **every** record, inject it from a Monolog processor 
 | `ecs.version` | configurable; defaults to `8.11.0` (the ECS schema this formatter's fields conform to — bump it if you emit fields from a newer ECS version) |
 | `log.logger` | channel name |
 | `event.kind` / `module` / `dataset` | `event` / `symfony` / `symfony.logs` |
-| `event.created` / `severity` | record datetime / Monolog level integer |
+| `event.severity` | Monolog level integer |
+
+`event.created` is deliberately not emitted: per ECS it is the agent's/pipeline's *read* time (the record's own time is `@timestamp`; datastore arrival is `event.ingested`, typically set by an ingest pipeline).
 
 ## Exceptions
 
