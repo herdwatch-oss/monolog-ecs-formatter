@@ -11,6 +11,8 @@ use Herdwatch\MonologEcsFormatter\Ecs\EventOutcome;
 use Herdwatch\MonologEcsFormatter\Ecs\EventType;
 use Herdwatch\MonologEcsFormatter\Ecs\Host;
 use Herdwatch\MonologEcsFormatter\Ecs\Http;
+use Herdwatch\MonologEcsFormatter\Ecs\Network;
+use Herdwatch\MonologEcsFormatter\Ecs\NetworkDirection;
 use Herdwatch\MonologEcsFormatter\Ecs\Process;
 use Herdwatch\MonologEcsFormatter\Ecs\Url;
 use Herdwatch\MonologEcsFormatter\Ecs\UserAgent;
@@ -107,6 +109,28 @@ class StandardEcsTypesTest extends TestCase
             (new Event(action: 'farm.sync', outcome: EventOutcome::Failure, reason: 'threshold'))->toEcs(),
         );
         self::assertSame(['event' => ['reason' => 'threshold']], (new Event(reason: 'threshold'))->toEcs());
+    }
+
+    public function testNetworkDirection(): void
+    {
+        self::assertSame(
+            ['network' => ['direction' => 'outbound']],
+            (new Network(direction: NetworkDirection::Outbound))->toEcs(),
+        );
+    }
+
+    public function testNetworkOmitsNulls(): void
+    {
+        self::assertSame([], (new Network())->toEcs());
+    }
+
+    public function testNetworkDirectionEnumCoversTheEcsExpectedValues(): void
+    {
+        // The ECS-documented expected values, regardless of declaration order.
+        self::assertEqualsCanonicalizing(
+            ['ingress', 'egress', 'inbound', 'outbound', 'internal', 'external', 'unknown'],
+            array_map(static fn (NetworkDirection $d): string => $d->value, NetworkDirection::cases()),
+        );
     }
 
     public function testEventOutcomeEnumCoversTheEcsAllowedValues(): void
